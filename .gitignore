@@ -1,0 +1,53 @@
+# Dependencies
+web/node_modules/
+web/dist/
+web/.vite/
+vendor/
+
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+configs/config.local.yaml
+*.pem
+*.key
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build outputs
+*.exe
+*.dll
+*.so
+*.dylib
+erp-server
+dist/
+build/
+tmp/
+temp/
+
+# Logs
+*.log
+logs/
+
+# Test coverage
+coverage/
+*.cover
+*.out
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Docker volumes
+postgres_data/
+redis_data/
