@@ -45,10 +45,13 @@ type WorkOrderListReq struct {
 }
 
 type MaterialIssueScanReq struct {
-	WorkOrderNo  string  `json:"work_order_no" binding:"required"`
-	MaterialCode string  `json:"material_code" binding:"required"`
-	Qty          float64 `json:"qty" binding:"required,gt=0"`
-	DeviceCode   string  `json:"device_code"`
+	WorkOrderNo    string  `json:"work_order_no" binding:"required"`
+	MaterialCode   string  `json:"material_code" binding:"required"`
+	WarehouseCode  string  `json:"warehouse_code" binding:"required"`
+	LocationCode   string  `json:"location_code" binding:"required"`
+	Qty            float64 `json:"qty" binding:"required,gt=0"`
+	DeviceCode     string  `json:"device_code"`
+	IdempotencyKey string  `json:"-"`
 }
 
 type MaterialIssueScanRes struct {

@@ -17,7 +17,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/viper"
 
+	"erp-system/internal/pkg/bizno"
 	"erp-system/internal/pkg/db"
+	"erp-system/internal/pkg/idemp"
 	"erp-system/internal/pkg/logger"
 	"erp-system/internal/pkg/middleware"
 	"erp-system/internal/pkg/redis"
@@ -114,22 +116,38 @@ func main() {
 	mdmSvc := mdmService.NewMDMService(mdmMaterialRepo, mdmSupplierRepo, mdmWarehouseRepo, mdmLocationRepo)
 	mdmH := mdmHandler.NewMDMHandler(mdmSvc)
 
+	// 公共基础设施：单号生成器、幂等键守卫
+	numberGen := bizno.NewGenerator(rdb)
+	idempGuard := idemp.NewGuard(rdb, 24*time.Hour)
+
 	// 仓库模块
 	warehouseInvRepo := warehouseRepository.NewInventoryRepository(dbConn)
 	warehouseLedgerRepo := warehouseRepository.NewStockLedgerRepository(dbConn)
-	warehouseSvc := warehouseService.NewWarehouseService(txManager, warehouseInvRepo, warehouseLedgerRepo, mdmMaterialRepo, mdmWarehouseRepo, mdmLocationRepo)
+	warehouseSvc := warehouseService.NewWarehouseService(
+		txManager, warehouseInvRepo, warehouseLedgerRepo,
+		mdmMaterialRepo, mdmWarehouseRepo, mdmLocationRepo,
+		numberGen, idempGuard,
+	)
 	warehouseH := warehouseHandler.NewWarehouseHandler(warehouseSvc)
 
 	// 采购模块
 	purchaseOrderRepo := purchaseRepository.NewPurchaseOrderRepository(dbConn)
 	purchaseInboundRepo := purchaseRepository.NewPurchaseInboundRepository(dbConn)
-	purchaseSvc := purchaseService.NewPurchaseService(txManager, purchaseOrderRepo, purchaseInboundRepo, mdmSupplierRepo, mdmMaterialRepo, warehouseSvc)
+	purchaseSvc := purchaseService.NewPurchaseService(
+		txManager, purchaseOrderRepo, purchaseInboundRepo,
+		mdmSupplierRepo, mdmMaterialRepo, mdmWarehouseRepo, mdmLocationRepo,
+		warehouseSvc, numberGen, idempGuard,
+	)
 	purchaseH := purchaseHandler.NewPurchaseHandler(purchaseSvc)
 
 	// 生产模块
 	productionWorkOrderRepo := productionRepository.NewWorkOrderRepository(dbConn)
 	productionBomRepo := productionRepository.NewBomRepository(dbConn)
-	productionSvc := productionService.NewProductionService(txManager, productionWorkOrderRepo, productionBomRepo, mdmMaterialRepo, warehouseSvc)
+	productionSvc := productionService.NewProductionService(
+		txManager, productionWorkOrderRepo, productionBomRepo,
+		mdmMaterialRepo, mdmWarehouseRepo, mdmLocationRepo,
+		warehouseSvc, numberGen, idempGuard,
+	)
 	productionH := productionHandler.NewProductionHandler(productionSvc)
 
 	// 财务模块

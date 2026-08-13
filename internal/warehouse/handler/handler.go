@@ -1,15 +1,14 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package handler
 
 import (
-	"net/http"
-	"strconv"
-
 	"github.com/gin-gonic/gin"
+
+	"erp-system/internal/pkg/middleware"
+	"erp-system/internal/pkg/response"
 	"erp-system/internal/warehouse/dto"
 	"erp-system/internal/warehouse/service"
-	"erp-system/internal/pkg/response"
 )
 
 type WarehouseHandler struct {
@@ -23,63 +22,73 @@ func NewWarehouseHandler(warehouseService *service.WarehouseService) *WarehouseH
 func (h *WarehouseHandler) InboundScan(c *gin.Context) {
 	var req dto.InboundScanReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, response.Err(10005, "参数错误: "+err.Error()))
+		response.BadRequest(c, "参数错误: "+err.Error())
 		return
 	}
+	req.IdempotencyKey = idempotencyKey(c)
 
 	res, err := h.warehouseService.Inbound(c.Request.Context(), req)
 	if err != nil {
-		c.JSON(http.StatusOK, response.FromError(err))
+		response.Fail(c, err)
 		return
 	}
-
-	c.JSON(http.StatusOK, response.OK(res))
+	response.Success(c, res)
 }
 
 func (h *WarehouseHandler) OutboundScan(c *gin.Context) {
 	var req dto.OutboundScanReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, response.Err(10005, "参数错误: "+err.Error()))
+		response.BadRequest(c, "参数错误: "+err.Error())
 		return
 	}
+	req.IdempotencyKey = idempotencyKey(c)
 
 	res, err := h.warehouseService.Outbound(c.Request.Context(), req)
 	if err != nil {
-		c.JSON(http.StatusOK, response.FromError(err))
+		response.Fail(c, err)
 		return
 	}
-
-	c.JSON(http.StatusOK, response.OK(res))
+	response.Success(c, res)
 }
 
 func (h *WarehouseHandler) ListInventory(c *gin.Context) {
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
-	warehouseID, _ := strconv.ParseInt(c.Query("warehouse_id"), 10, 64)
-
-	req := dto.InventoryQuery{
-		WarehouseID:   warehouseID,
-		MaterialCode:  c.Query("material_code"),
-		MaterialName:  c.Query("material_name"),
-		Page:         page,
-		PageSize:     pageSize,
+	var req dto.InventoryQuery
+	if err := c.ShouldBindQuery(&req); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
 	}
 
 	list, total, err := h.warehouseService.ListInventory(c.Request.Context(), req)
 	if err != nil {
-		c.JSON(http.StatusOK, response.FromError(err))
+		response.Fail(c, err)
 		return
 	}
-
-	c.JSON(http.StatusOK, response.Page(list, total, page, pageSize))
+	response.PageSuccess(c, list, total, req.Page, req.PageSize)
 }
 
 func (h *WarehouseHandler) GetStockAlerts(c *gin.Context) {
 	list, err := h.warehouseService.GetStockAlerts(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusOK, response.FromError(err))
+		response.Fail(c, err)
 		return
 	}
-
-	c.JSON(http.StatusOK, response.OK(list))
+	response.Success(c, list)
 }
+
+// 写入类接口应带 Idempotency-Key；未带时服务端不强制（可由路由/网关层要求）。
+func idempotencyKey(c *gin.Context) string {
+	if v := c.GetHeader("Idempotency-Key"); v != "" {
+		return v
+	}
+	// 兼容旧客户端：X-Request-Id / X-Trace-ID 兜底
+	if v := c.GetHeader("X-Request-Id"); v != "" {
+		return v
+	}
+	if v, ok := c.Get(middleware.CtxJTI); ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+

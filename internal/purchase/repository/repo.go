@@ -1,9 +1,11 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package repository
 
 import (
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
 	"erp-system/internal/purchase/model"
 )
 
@@ -13,7 +15,12 @@ type PurchaseOrderRepository interface {
 	FindByOrderNo(orderNo string) (*model.PurPurchaseOrder, error)
 	List(orderNo string, supplierID int64, status int, page, pageSize int) ([]model.PurPurchaseOrder, int64, error)
 	FindItems(orderID int64) ([]model.PurPurchaseOrderItem, error)
+
+	// 事务内方法：供 InboundScan 在同一事务里锁定订单/明细。
+	FindByOrderNoForUpdate(tx *gorm.DB, orderNo string) (*model.PurPurchaseOrder, error)
+	FindItemForUpdate(tx *gorm.DB, itemID int64) (*model.PurPurchaseOrderItem, error)
 	UpdateItemReceivedQty(tx *gorm.DB, itemID int64, qty float64) error
+	UpdateOrderStatus(tx *gorm.DB, orderID int64, status int, fields map[string]interface{}) error
 }
 
 type PurchaseInboundRepository interface {
@@ -43,6 +50,24 @@ func (r *purchaseOrderRepo) FindByOrderNo(orderNo string) (*model.PurPurchaseOrd
 		return nil, err
 	}
 	return &order, nil
+}
+
+func (r *purchaseOrderRepo) FindByOrderNoForUpdate(tx *gorm.DB, orderNo string) (*model.PurPurchaseOrder, error) {
+	var order model.PurPurchaseOrder
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("order_no = ?", orderNo).First(&order).Error; err != nil {
+		return nil, err
+	}
+	return &order, nil
+}
+
+func (r *purchaseOrderRepo) FindItemForUpdate(tx *gorm.DB, itemID int64) (*model.PurPurchaseOrderItem, error) {
+	var item model.PurPurchaseOrderItem
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ?", itemID).First(&item).Error; err != nil {
+		return nil, err
+	}
+	return &item, nil
 }
 
 func (r *purchaseOrderRepo) List(orderNo string, supplierID int64, status int, page, pageSize int) ([]model.PurPurchaseOrder, int64, error) {
@@ -79,6 +104,14 @@ func (r *purchaseOrderRepo) UpdateItemReceivedQty(tx *gorm.DB, itemID int64, qty
 	return tx.Model(&model.PurPurchaseOrderItem{}).
 		Where("id = ?", itemID).
 		Update("received_qty", gorm.Expr("received_qty + ?", qty)).Error
+}
+
+func (r *purchaseOrderRepo) UpdateOrderStatus(tx *gorm.DB, orderID int64, status int, fields map[string]interface{}) error {
+	if fields == nil {
+		fields = map[string]interface{}{}
+	}
+	fields["status"] = status
+	return tx.Model(&model.PurPurchaseOrder{}).Where("id = ?", orderID).Updates(fields).Error
 }
 
 type purchaseInboundRepo struct {
