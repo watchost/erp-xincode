@@ -130,6 +130,15 @@ func JWTAuth(secret string) gin.HandlerFunc {
 		c.Set(CtxRoles, claims.Roles)
 		c.Set(CtxPerms, claims.Perms)
 		c.Set(CtxJTI, claims.JTI)
+
+		// 同时写入标准 context，供 service 层读取（如 created_by、审计日志）。
+		ctx := c.Request.Context()
+		ctx = auth.WithUserID(ctx, claims.UserID)
+		ctx = auth.WithUsername(ctx, claims.Username)
+		ctx = auth.WithTenantID(ctx, claims.TenantID)
+		ctx = auth.WithJTI(ctx, claims.JTI)
+		c.Request = c.Request.WithContext(ctx)
+
 		c.Next()
 	}
 }

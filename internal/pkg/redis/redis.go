@@ -68,6 +68,10 @@ func (r *RedisClient) TTL(ctx context.Context, key string) (time.Duration, error
 	return r.client.TTL(ctx, key).Result()
 }
 
+func (r *RedisClient) Expire(ctx context.Context, key string, expiration time.Duration) (bool, error) {
+	return r.client.Expire(ctx, key, expiration).Result()
+}
+
 func (r *RedisClient) Client() *redis.Client {
 	return r.client
 }
