@@ -1,7 +1,7 @@
 # 后续开发文档（Roadmap）
 
-> 版本：v1.0-draft
-> 日期：2026-08-13
+> 版本：v1.1
+> 日期：2026-08-14
 > 作者：zhouhouping
 > 适用仓库：`watchost/erp-xincode`
 > 关联：[代码审计报告](AUDIT.md)、[架构约定](development/00-conventions.md)
@@ -12,7 +12,7 @@
 
 ## 0. 当前状态判断
 
-经 [AUDIT.md](AUDIT.md) 审计，系统存在 8 项 P0 致命问题，生产/财务模块因模型与迁移不一致**调用即 SQL 报错**，库存成本核算确定性错误，认证/权限为空壳。当前代码**不能投入真实业务数据**。
+经 [AUDIT.md](AUDIT.md) 审计，系统初始版本存在 8 项 P0 致命问题。截至 2026-08-14，已完成第一批 P0 后端整改：真实 JWT/RBAC、用户上下文、真实 HTTP 状态码、服务优雅关闭、库存行锁与移动平均成本、采购/生产同事务库存联动、Redis 业务单号与幂等守卫、生产 schema 对齐。财务闭环、密钥彻底外置、前端权限/错误处理、测试与部署硬化仍未完成，因此当前代码**仍不能投入真实业务数据**。
 
 因此后续开发**严格按顺序分四个阶段**，前一阶段未验收不得进入下一阶段：
 
@@ -32,6 +32,8 @@
 目标：**系统能安全地放数据**。不做新功能，只修审计报告中的致命/高危问题。
 
 ### 1.1 认证与权限（阻断性，第 1 周）
+
+**当前状态：后端基础已完成，前端和细粒度数据权限未完成。** 已实现真实 Bearer JWT 解析、claims 注入 gin/context、`RequirePermission` 路由守卫、登录/刷新/登出/改密、refresh token 轮换和 Redis 黑名单写入；待完成中间件逐请求校验 jti 黑名单、密钥长度提至 ≥32 字节、登录防爆破、数据权限 Scopes、前端三级权限。
 
 依据 [AUDIT P0-1/P0-2/P1-1~P1-6](AUDIT.md)：
 
@@ -58,6 +60,8 @@
 
 ### 1.2 密钥与默认凭据（第 1 周）
 
+**当前状态：部分完成。** 已启用 viper `AutomaticEnv` 和 `JWT_SECRET`/`SERVER_PORT` 等环境变量覆盖，密码哈希 cost 提至 12；但配置文件中的示例密钥仍需移除/轮换，默认 admin 首登改密、登录限流和 git 历史清理未完成。
+
 - 删除 `configs/config.yaml` 中所有明文密钥，改为 `${JWT_SECRET}` 占位或从环境变量读取；
 - `docker-compose.yml` 用 `.env` 文件（已在 `.gitignore`）注入机密，compose 文件里只留变量引用；
 - 首次启动时若 admin 密码为默认值，强制改密；默认密码从镜像/环境变量注入一次性随机值并打印到启动日志；
@@ -66,6 +70,8 @@
 - 清理 git 历史中的密钥（`git filter-repo` 或 BFG）。
 
 ### 1.3 库存与成本正确性（第 1-2 周）
+
+**当前状态：后端核心路径已完成。** 已实现 repository 透传 `tx`、库存行 `FOR UPDATE`、入库 `ON CONFLICT` upsert、移动加权平均成本、仓库/库位必填、跨服务同事务出入库方法、Redis 业务单号和扫码幂等。采购入库使用订单明细单价；生产领料按当前平均成本结转。待补：台账数据库级唯一约束、退库/冲销语义、盘点/调拨、金额 decimal 化。
 
 依据 [AUDIT P0-3~P0-6](AUDIT.md)、[02-business.md](audit/02-business.md) S1-S3：
 
@@ -100,6 +106,8 @@
 
 ### 1.4 数据模型与迁移对齐（第 2 周）
 
+**当前状态：生产模块已对齐，财务模块和迁移工具链未完成。** `0004_production_schema.up.sql` 已补齐/修正 `prod_bom`、`prod_bom_item`、`prod_production_receipt` 及工单字段；Go 端创建 BOM/工单不再命中已审计的列名错误。待完成财务表结构对齐、引入正式迁移版本管理、统一状态码与 decimal/jsonb 类型。
+
 依据 [AUDIT P0-7](AUDIT.md)：
 
 - 以 model 为准**重写迁移**，统一列名与类型；
@@ -112,6 +120,8 @@
 
 ### 1.5 财务最小闭环（第 2 周）
 
+**当前状态：未开始。** 现有采购入库/生产领料只保证库存和业务单据一致，尚未生成会计凭证、预算占用或正确财务报表；这仍是 P0 剩余高优先级。
+
 依据 [02-business.md S5](audit/02-business.md)：
 
 - 业务发生时（采购入库、生产领料、销售出库——销售模块在 P2）在同事务内写**借贷双分录**并校验平衡；
@@ -121,6 +131,8 @@
 - 禁止 `_ = err`，所有错误必须返回或日志记录。
 
 ### 1.6 基础设施（第 2 周）
+
+**当前状态：部分完成。** 已启用 `http.Server` 超时与优雅关闭、Recovery/TraceID/CORS/Timeout 中间件、viper 环境变量覆盖、真实 HTTP 错误状态码，并提交 `go.sum`。待补 `/healthz`/`/readyz`、非 root Dockerfile、固定镜像 tag、前端 401 处理、删除 mock/伪成功提示、生产模式默认值和完整安全头。
 
 - `&http.Server{ReadTimeout,ReadHeaderTimeout,WriteTimeout,IdleTimeout,MaxHeaderBytes}` + `signal.NotifyContext` + `Shutdown`；
 - 注册 `TraceID/CORS/RequestLogger/SecurityHeaders` 中间件，删除有 goroutine 泄漏 bug 的 `Timeout` 中间件或改用 `http.TimeoutHandler`；
@@ -133,12 +145,13 @@
 
 ### 1.7 P0 验收清单
 
-- [ ] 无 `Authorization: x` 不能访问任何 `/api/v1/*`；
-- [ ] 低权限用户访问未授权接口返回 403；
+- [x] 无 `Authorization: x` 不能访问任何 `/api/v1/*`；
+- [x] 低权限用户访问未授权接口返回 403；
 - [ ] 并发出库不会超卖（压测：100 并发扣 100 库存，最终 qty=0）；
-- [ ] 采购入库后 `avg_cost` 正确反映采购价；
-- [ ] 事务2 失败时库存回滚（故障注入测试）；
-- [ ] `POST /production/bom`、`GET /finance/account-entries` 不再 SQL 报错；
+- [ ] 采购入库后 `avg_cost` 正确反映采购价（需集成测试覆盖）；
+- [ ] 单据写入失败时库存回滚（故障注入测试）；
+- [ ] `POST /production/bom` 在执行 `0004_production_schema` 后不再 SQL 报错；
+- [ ] `GET /finance/account-entries` 等财务接口在财务 schema 对齐后不再 SQL 报错；
 - [ ] 财务报表借贷平衡，收入取贷方；
 - [ ] `go test ./...` 至少覆盖库存/采购/财务 service 核心路径；
 - [ ] `govulncheck ./...` 无高危；

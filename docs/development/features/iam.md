@@ -1,5 +1,18 @@
 # IAM 用户/角色/权限/审计
 
+## 0. 当前实现状态（2026-08-14）
+
+已完成第一批 P0 后端能力：
+
+- `Authorization: Bearer <token>` 真实解析 JWT，校验签名、过期时间和 HMAC 算法；
+- claims 中的 `user_id`、`username`、`tenant_id`、`roles`、`perms`、`jti` 注入 gin context 和标准 `context.Context`；
+- 所有 `/api/v1/*` 业务接口经过 `JWTAuth`，写/敏感接口经过 `RequirePermission`；
+- access token 默认 30 分钟、refresh token 默认 7 天；refresh token 在 Redis 中保存并旋转；
+- `POST /api/v1/auth/logout` 将当前 jti 写入 Redis 黑名单；`POST /api/v1/auth/change-password` 支持用户改密；
+- 用户创建/更新改用 DTO，避免 `PasswordHash json:"-"` 导致无法设密码和全字段 mass assignment；密码使用 bcrypt cost 12。
+
+尚未完成：中间件逐请求校验 jti 黑名单、登录失败限流/验证码、强制首登改密、角色/权限完整 CRUD、审计日志写入、数据权限 Scopes、前端路由/菜单/按钮三级权限。
+
 ## 1. 目标
 
 完整的身份认证与访问控制：登录、登出、改密、用户/角色/权限 CRUD、数据权限、审计日志、登录防爆破。
@@ -15,30 +28,33 @@
 
 ## 3. 接口
 
+当前已挂载的接口：
+
 | 方法 | 路径 | 权限 | 说明 |
 |---|---|---|---|
-| POST | /auth/login | 公开 | 登录，返回 access+refresh |
+| POST | /login | 公开 | 登录，返回 access+refresh |
+| POST | /refresh | 公开 | refresh token 换新并旋转 |
 | POST | /auth/logout | 登录 | 拉黑当前 jti |
-| POST | /auth/refresh | 公开 | refresh token 换新 |
 | POST | /auth/change-password | 登录 | 修改自己密码 |
-| GET | /users/profile | 登录 | 当前用户信息+权限 |
-| GET | /users | iam:user:view | 用户列表（带数据权限过滤） |
-| POST | /users | iam:user:create | 创建用户（含密码、角色） |
-| GET | /users/:id | iam:user:view | 用户详情 |
-| PUT | /users/:id | iam:user:update | 更新用户 |
-| DELETE | /users/:id | iam:user:delete | 停用（软删除） |
-| PUT | /users/:id/roles | iam:user:assign | 分配角色 |
-| POST | /users/:id/reset-password | iam:user:reset | 管理员重置密码 |
-| GET | /roles | iam:role:view | 角色列表 |
-| POST | /roles | iam:role:create | 创建角色 |
-| PUT | /roles/:id | iam:role:update | 更新角色 |
-| DELETE | /roles/:id | iam:role:delete | 删除角色 |
-| GET | /roles/:id/permissions | iam:role:view | 角色权限 |
-| PUT | /roles/:id/permissions | iam:role:assign | 分配权限 |
+| GET | /users/profile | 登录 | 当前用户信息 |
+| GET | /users/permissions | 登录 | 当前用户权限码 |
+| GET | /iam/users | `iam:user` | 用户列表 |
+| GET | /iam/users/:id | `iam:user` | 用户详情 |
+| POST | /iam/users | `iam:user` | 创建用户（含密码、角色） |
+| PUT | /iam/users/:id | `iam:user` | 更新用户并替换角色 |
+
+规划中的完整 IAM 接口：
+
+| 方法 | 路径 | 权限 | 说明 |
+|---|---|---|---|
+| DELETE | /iam/users/:id | `iam:user` | 停用（软删除） |
+| POST | /iam/users/:id/reset-password | `iam:user` | 管理员重置密码 |
+| GET/POST | /roles | `iam:role` | 角色列表/创建 |
+| PUT/DELETE | /roles/:id | `iam:role` | 更新/删除角色 |
+| GET/PUT | /roles/:id/permissions | `iam:role` | 角色权限查询/分配 |
 | GET | /permissions | 登录 | 全部权限树 |
-| GET | /audit-logs | iam:audit:view | 审计日志查询 |
-| GET | /departments | iam:dept:view | 部门树 |
-| POST | /departments | iam:dept:manage | 新建部门 |
+| GET | /audit-logs | `iam:audit:view` | 审计日志查询 |
+| GET/POST | /departments | `iam:dept:*` | 部门树/新建部门 |
 
 ## 4. 关键逻辑
 
@@ -55,13 +71,14 @@ type Claims struct {
     UserID   int64
     Username string
     TenantID int64
-    DeptID   int64
     Roles    []string
-    Perms    []string    // 权限码列表
-    jti      string
+    Perms    []string // 权限码列表；*:*:* 表示超级管理员
+    JTI      string
     jwt.RegisteredClaims
 }
 ```
+
+`DeptID`、`DataScope` 等字段将在数据权限阶段补充。
 
 ### 4.3 权限中间件
 ```go

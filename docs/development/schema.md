@@ -1,6 +1,6 @@
 # 数据库变更设计
 
-> 本文档列出 P0-P3 所有阶段需要新增/修改的表。迁移文件用 golang-migrate 管理，放在 `migrations/`。
+> 本文档列出 P0-P3 所有阶段需要新增/修改的表。当前仓库已有 `0001_init`、`0002_openapi_device`、`0003_iam_permissions`、`0004_production_schema` 四组 SQL 迁移；正式迁移工具（golang-migrate/goose）和 `schema_migrations` 版本表仍待引入。
 > 所有新表默认含 `id BIGSERIAL PK`、`created_at`、`updated_at`，业务表带 `tenant_id BIGINT NOT NULL DEFAULT 0`、`deleted_at TIMESTAMPTZ`（软删除）。
 
 ---

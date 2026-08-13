@@ -1,5 +1,21 @@
 # 库存管理增强：盘点 / 调拨 / 批次
 
+## 0. 当前 P0 基础库存能力（2026-08-14）
+
+当前已完成采购、生产主链路所需的基础库存能力：
+
+- 库存唯一维度为 `material_id + warehouse_id + location_id`；
+- 入库/出库必须指定 `warehouse_code` 和 `location_code`，已删除采购入库硬编码仓库 ID=1 的逻辑；
+- 库存行在事务内使用 `SELECT ... FOR UPDATE` 锁定，入库使用 `ON CONFLICT DO UPDATE` 原子 upsert；
+- 出库同时校验 `qty` 和 `available_qty`，不足时返回 HTTP 409；
+- 入库按移动加权平均成本计算：`new_avg = (old_avg*old_qty + unit_cost*in_qty)/(old_qty+in_qty)`；采购入库从订单明细单价带入成本；
+- 出库按当前平均成本结转 `cost_amount = avg_cost * qty` 并写 `inv_stock_ledger`；
+- 采购服务和生产服务通过 `ApplyInboundTx` / `ApplyOutboundTx` 在调用方事务内更新库存，避免库存已提交但单据失败的账实不符；
+- 业务单号使用 Redis 日流水号生成，格式如 `IB20260814-000001`、`OB20260814-000001`；
+- 采购入库、生产领料强制 `Idempotency-Key`，重复提交返回 HTTP 429。
+
+待完成：数据库级台账唯一约束、库存冻结/盘点、调拨、批次/序列号、金额 decimal 化、库存预警阈值主数据化。
+
 ## 一、库存盘点
 
 ### 1. 目标
