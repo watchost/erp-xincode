@@ -4,6 +4,7 @@ package routes
 
 import (
 	"github.com/gin-gonic/gin"
+
 	iamHandler "erp-system/internal/iam/handler"
 	mdmHandler "erp-system/internal/mdm/handler"
 	warehouseHandler "erp-system/internal/warehouse/handler"
@@ -17,115 +18,168 @@ import (
 	"erp-system/internal/pkg/middleware"
 )
 
-func RegisterRoutes(r *gin.Engine,
-	iamH *iamHandler.IAMHandler,
-	mdmH *mdmHandler.MDMHandler,
-	warehouseH *warehouseHandler.WarehouseHandler,
-	purchaseH *purchaseHandler.PurchaseHandler,
-	productionH *productionHandler.ProductionHandler,
-	financeH *financeHandler.FinanceHandler,
-	dashboardH *dashboardHandler.DashboardHandler,
-	deviceH *deviceHandler.DeviceHandler,
-	llmH *llmHandler.LLMHandler,
-	openapiH *openapiHandler.OpenAPIHandler,
-) {
-	r.POST("/api/v1/login", iamH.Login)
-	r.POST("/api/v1/refresh", iamH.RefreshToken)
+// Permission codes used for route guards. Keep in sync with sys_permission seed.
+const (
+	PermDashboardView    = "dashboard:view"
+	PermDashboardLLM     = "dashboard:llm"
 
-	r.POST("/api/v1/oauth/token", openapiH.GetToken)
-	r.POST("/api/v1/oauth/refresh", openapiH.RefreshToken)
+	PermWarehouseInbound   = "warehouse:inbound"
+	PermWarehouseOutbound  = "warehouse:outbound"
+	PermWarehouseInventory = "warehouse:inventory"
+
+	PermPurchaseOrderView    = "purchase:order:view"
+	PermPurchaseOrderCreate  = "purchase:order:create"
+	PermPurchaseOrderApprove = "purchase:order:approve"
+	PermPurchaseInbound      = "purchase:inbound"
+
+	PermProductionWOView   = "production:wo:view"
+	PermProductionWOCreate = "production:wo:create"
+	PermProductionOutbound = "production:outbound"
+
+	PermFinanceCost    = "finance:cost"
+	PermFinanceReports = "finance:reports"
+	PermFinanceBudget  = "finance:budget"
+
+	PermMDMMaterial  = "mdm:material"
+	PermMDMSupplier  = "mdm:supplier"
+	PermMDMWarehouse = "mdm:warehouse"
+	PermMDMLocation  = "mdm:location"
+
+	PermIAMUser = "iam:user"
+	PermIAMRole = "iam:role"
+
+	PermDeviceManage = "device:manage"
+	PermLLMChat      = "llm:chat"
+	PermOpenAPIAdmin = "openapi:admin"
+)
+
+// Deps bundles all HTTP handlers and infrastructure config needed for routing.
+type Deps struct {
+	JWTSecret   string
+	IAM         *iamHandler.IAMHandler
+	MDM         *mdmHandler.MDMHandler
+	Warehouse   *warehouseHandler.WarehouseHandler
+	Purchase    *purchaseHandler.PurchaseHandler
+	Production  *productionHandler.ProductionHandler
+	Finance     *financeHandler.FinanceHandler
+	Dashboard   *dashboardHandler.DashboardHandler
+	Device      *deviceHandler.DeviceHandler
+	LLM         *llmHandler.LLMHandler
+	OpenAPI     *openapiHandler.OpenAPIHandler
+}
+
+// RegisterRoutes wires all HTTP endpoints.
+// - Public endpoints (login/refresh/oauth token) are outside the JWT group.
+// - All /api/v1 business endpoints require a valid JWT.
+// - Mutating/sensitive endpoints additionally require a permission code.
+func RegisterRoutes(r *gin.Engine, d Deps) {
+	// 公开接口：不需要登录
+	r.POST("/api/v1/login", d.IAM.Login)
+	r.POST("/api/v1/refresh", d.IAM.RefreshToken)
+
+	// OpenAPI 对外网关：OAuth2 取 token 不走内部 JWT
+	r.POST("/api/v1/oauth/token", d.OpenAPI.GetToken)
+	r.POST("/api/v1/oauth/refresh", d.OpenAPI.RefreshToken)
 
 	api := r.Group("/api/v1")
-	api.Use(middleware.JWTAuth())
+	api.Use(middleware.JWTAuth(d.JWTSecret))
 	{
-		api.GET("/users/profile", iamH.GetUserInfo)
-		api.GET("/users/permissions", iamH.GetPermissions)
-		api.GET("/users", iamH.ListUsers)
-		api.GET("/users/:id", iamH.GetUser)
-		api.POST("/users", iamH.CreateUser)
-		api.PUT("/users/:id", iamH.UpdateUser)
+		// 当前用户信息 / 登出 / 改密：只要登录即可
+		api.GET("/users/profile", d.IAM.GetUserInfo)
+		api.GET("/users/permissions", d.IAM.GetPermissions)
+		api.POST("/auth/logout", d.IAM.Logout)
+		api.POST("/auth/change-password", d.IAM.ChangePassword)
+
+		// IAM 用户管理
+		iamG := api.Group("/iam", middleware.RequirePermission(PermIAMUser))
+		{
+			iamG.GET("/users", d.IAM.ListUsers)
+			iamG.GET("/users/:id", d.IAM.GetUser)
+			iamG.POST("/users", d.IAM.CreateUser)
+			iamG.PUT("/users/:id", d.IAM.UpdateUser)
+		}
 
 		mdm := api.Group("/mdm")
 		{
-			mdm.POST("/materials", mdmH.CreateMaterial)
-			mdm.GET("/materials", mdmH.ListMaterials)
-			mdm.GET("/materials/:id", mdmH.GetMaterial)
-			mdm.PUT("/materials/:id", mdmH.UpdateMaterial)
+			mdm.POST("/materials", middleware.RequirePermission(PermMDMMaterial), d.MDM.CreateMaterial)
+			mdm.GET("/materials", middleware.RequirePermission(PermMDMMaterial), d.MDM.ListMaterials)
+			mdm.GET("/materials/:id", middleware.RequirePermission(PermMDMMaterial), d.MDM.GetMaterial)
+			mdm.PUT("/materials/:id", middleware.RequirePermission(PermMDMMaterial), d.MDM.UpdateMaterial)
 
-			mdm.POST("/suppliers", mdmH.CreateSupplier)
-			mdm.GET("/suppliers", mdmH.ListSuppliers)
-			mdm.GET("/suppliers/:id", mdmH.GetSupplier)
-			mdm.PUT("/suppliers/:id", mdmH.UpdateSupplier)
+			mdm.POST("/suppliers", middleware.RequirePermission(PermMDMSupplier), d.MDM.CreateSupplier)
+			mdm.GET("/suppliers", middleware.RequirePermission(PermMDMSupplier), d.MDM.ListSuppliers)
+			mdm.GET("/suppliers/:id", middleware.RequirePermission(PermMDMSupplier), d.MDM.GetSupplier)
+			mdm.PUT("/suppliers/:id", middleware.RequirePermission(PermMDMSupplier), d.MDM.UpdateSupplier)
 
-			mdm.POST("/warehouses", mdmH.CreateWarehouse)
-			mdm.GET("/warehouses", mdmH.ListWarehouses)
+			mdm.POST("/warehouses", middleware.RequirePermission(PermMDMWarehouse), d.MDM.CreateWarehouse)
+			mdm.GET("/warehouses", middleware.RequirePermission(PermMDMWarehouse), d.MDM.ListWarehouses)
 
-			mdm.POST("/locations", mdmH.CreateLocation)
-			mdm.GET("/locations", mdmH.ListLocations)
+			mdm.POST("/locations", middleware.RequirePermission(PermMDMLocation), d.MDM.CreateLocation)
+			mdm.GET("/locations", middleware.RequirePermission(PermMDMLocation), d.MDM.ListLocations)
 		}
 
 		warehouse := api.Group("/warehouse")
 		{
-			warehouse.POST("/inbound/scan", warehouseH.InboundScan)
-			warehouse.POST("/outbound/scan", warehouseH.OutboundScan)
-			warehouse.GET("/inventory", warehouseH.ListInventory)
-			warehouse.GET("/stock-alerts", warehouseH.GetStockAlerts)
+			warehouse.POST("/inbound/scan", middleware.RequirePermission(PermWarehouseInbound), d.Warehouse.InboundScan)
+			warehouse.POST("/outbound/scan", middleware.RequirePermission(PermWarehouseOutbound), d.Warehouse.OutboundScan)
+			warehouse.GET("/inventory", middleware.RequirePermission(PermWarehouseInventory), d.Warehouse.ListInventory)
+			warehouse.GET("/stock-alerts", middleware.RequirePermission(PermWarehouseInventory), d.Warehouse.GetStockAlerts)
 		}
 
 		purchase := api.Group("/purchase")
 		{
-			purchase.POST("/orders", purchaseH.CreateOrder)
-			purchase.POST("/orders/:order_no/approve", purchaseH.ApproveOrder)
-			purchase.GET("/orders", purchaseH.ListOrders)
-			purchase.POST("/inbound/scan", purchaseH.InboundScan)
+			purchase.GET("/orders", middleware.RequirePermission(PermPurchaseOrderView), d.Purchase.ListOrders)
+			purchase.POST("/orders", middleware.RequirePermission(PermPurchaseOrderCreate), d.Purchase.CreateOrder)
+			purchase.POST("/orders/:order_no/approve", middleware.RequirePermission(PermPurchaseOrderApprove), d.Purchase.ApproveOrder)
+			purchase.POST("/inbound/scan", middleware.RequirePermission(PermPurchaseInbound), d.Purchase.InboundScan)
 		}
 
 		production := api.Group("/production")
 		{
-			production.POST("/work-orders", productionH.CreateWorkOrder)
-			production.POST("/work-orders/:work_order_no/release", productionH.ReleaseWorkOrder)
-			production.GET("/work-orders", productionH.ListWorkOrders)
-			production.POST("/material-issue/scan", productionH.MaterialIssueScan)
-			production.POST("/bom", productionH.CreateBom)
+			production.GET("/work-orders", middleware.RequirePermission(PermProductionWOView), d.Production.ListWorkOrders)
+			production.POST("/work-orders", middleware.RequirePermission(PermProductionWOCreate), d.Production.CreateWorkOrder)
+			production.POST("/work-orders/:work_order_no/release", middleware.RequirePermission(PermProductionWOCreate), d.Production.ReleaseWorkOrder)
+			production.POST("/material-issue/scan", middleware.RequirePermission(PermProductionOutbound), d.Production.MaterialIssueScan)
+			production.POST("/bom", middleware.RequirePermission(PermProductionWOCreate), d.Production.CreateBom)
 		}
 
 		finance := api.Group("/finance")
 		{
-			finance.GET("/cost-cards", financeH.ListCostCards)
-			finance.GET("/cost-summary", financeH.GetCostSummary)
-			finance.GET("/account-entries", financeH.ListAccountEntries)
-			finance.GET("/financial-report", financeH.GetFinancialReport)
-			finance.GET("/budgets", financeH.ListBudgets)
+			finance.GET("/cost-cards", middleware.RequirePermission(PermFinanceCost), d.Finance.ListCostCards)
+			finance.GET("/cost-summary", middleware.RequirePermission(PermFinanceCost), d.Finance.GetCostSummary)
+			finance.GET("/account-entries", middleware.RequirePermission(PermFinanceReports), d.Finance.ListAccountEntries)
+			finance.GET("/financial-report", middleware.RequirePermission(PermFinanceReports), d.Finance.GetFinancialReport)
+			finance.GET("/budgets", middleware.RequirePermission(PermFinanceBudget), d.Finance.ListBudgets)
 		}
 
 		dashboard := api.Group("/dashboard")
 		{
-			dashboard.GET("/overview", dashboardH.GetOverview)
-			dashboard.GET("/stock-alerts", dashboardH.GetStockAlerts)
-			dashboard.GET("/recent-orders", dashboardH.GetRecentOrders)
-			dashboard.POST("/llm/analysis", dashboardH.GetLLMAnalysis)
+			dashboard.GET("/overview", middleware.RequirePermission(PermDashboardView), d.Dashboard.GetOverview)
+			dashboard.GET("/stock-alerts", middleware.RequirePermission(PermDashboardView), d.Dashboard.GetStockAlerts)
+			dashboard.GET("/recent-orders", middleware.RequirePermission(PermDashboardView), d.Dashboard.GetRecentOrders)
+			dashboard.POST("/llm/analysis", middleware.RequirePermission(PermDashboardLLM), d.Dashboard.GetLLMAnalysis)
 		}
 
-		device := api.Group("/device")
+		device := api.Group("/device", middleware.RequirePermission(PermDeviceManage))
 		{
-			device.POST("/register", deviceH.Register)
-			device.POST("/heartbeat", deviceH.Heartbeat)
-			device.GET("/list", deviceH.List)
-			device.GET("/:device_code", deviceH.GetByCode)
+			device.POST("/register", d.Device.Register)
+			device.POST("/heartbeat", d.Device.Heartbeat)
+			device.GET("/list", d.Device.List)
+			device.GET("/:device_code", d.Device.GetByCode)
 		}
 
-		llm := api.Group("/llm")
+		llm := api.Group("/llm", middleware.RequirePermission(PermLLMChat))
 		{
-			llm.POST("/chat", llmH.Chat)
-			llm.GET("/sessions", llmH.ListSessions)
-			llm.GET("/sessions/:session_id/history", llmH.GetHistory)
+			llm.POST("/chat", d.LLM.Chat)
+			llm.GET("/sessions", d.LLM.ListSessions)
+			llm.GET("/sessions/:session_id/history", d.LLM.GetHistory)
 		}
 
-		openapi := api.Group("/openapi")
+		openapi := api.Group("/openapi", middleware.RequirePermission(PermOpenAPIAdmin))
 		{
-			openapi.POST("/webhooks", openapiH.CreateWebhook)
-			openapi.POST("/sync", openapiH.Sync)
-			openapi.GET("/clients", openapiH.ListClients)
+			openapi.POST("/webhooks", d.OpenAPI.CreateWebhook)
+			openapi.POST("/sync", d.OpenAPI.Sync)
+			openapi.GET("/clients", d.OpenAPI.ListClients)
 		}
 	}
 }

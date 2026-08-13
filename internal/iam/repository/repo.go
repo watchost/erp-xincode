@@ -1,4 +1,4 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package repository
 
@@ -7,17 +7,20 @@ import (
 	"erp-system/internal/iam/model"
 )
 
+// UserRepository 负责 sys_user 的读写。
+// 写方法接收 *gorm.DB 以便 service 在同一事务里组合多张表。
 type UserRepository interface {
 	FindByUsername(username string) (*model.SysUser, error)
 	FindByID(id int64) (*model.SysUser, error)
-	Create(user *model.SysUser) error
-	Update(user *model.SysUser) error
+	Create(tx *gorm.DB, user *model.SysUser) error
+	UpdateFields(tx *gorm.DB, id int64, fields map[string]interface{}) error
 	List(username string, page, pageSize int) ([]model.SysUser, int64, error)
 }
 
 type RoleRepository interface {
 	FindByCode(code string) (*model.SysRole, error)
 	FindByID(id int64) (*model.SysRole, error)
+	FindByIDs(ids []int64) ([]model.SysRole, error)
 	List() ([]model.SysRole, error)
 }
 
@@ -29,6 +32,8 @@ type PermissionRepository interface {
 type UserRoleRepository interface {
 	GetUserRoles(userID int64) ([]model.SysRole, error)
 	GetRolePermissions(roleID int64) ([]model.SysPermission, error)
+	// ReplaceUserRoles 在同一事务里删除旧绑定再写入新绑定。
+	ReplaceUserRoles(tx *gorm.DB, userID int64, roleIDs []int64) error
 }
 
 type AuditLogRepository interface {
@@ -59,12 +64,22 @@ func (r *userRepo) FindByID(id int64) (*model.SysUser, error) {
 	return &user, nil
 }
 
-func (r *userRepo) Create(user *model.SysUser) error {
-	return r.db.Create(user).Error
+func (r *userRepo) Create(tx *gorm.DB, user *model.SysUser) error {
+	if tx == nil {
+		tx = r.db
+	}
+	return tx.Create(user).Error
 }
 
-func (r *userRepo) Update(user *model.SysUser) error {
-	return r.db.Save(user).Error
+// UpdateFields 使用 map 白名单更新，避免 Save 整行覆盖造成的 Mass Assignment。
+func (r *userRepo) UpdateFields(tx *gorm.DB, id int64, fields map[string]interface{}) error {
+	if tx == nil {
+		tx = r.db
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	return tx.Model(&model.SysUser{}).Where("id = ?", id).Updates(fields).Error
 }
 
 func (r *userRepo) List(username string, page, pageSize int) ([]model.SysUser, int64, error) {
@@ -105,6 +120,17 @@ func (r *roleRepo) FindByID(id int64) (*model.SysRole, error) {
 		return nil, err
 	}
 	return &role, nil
+}
+
+func (r *roleRepo) FindByIDs(ids []int64) ([]model.SysRole, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var roles []model.SysRole
+	if err := r.db.Where("id IN ?", ids).Find(&roles).Error; err != nil {
+		return nil, err
+	}
+	return roles, nil
 }
 
 func (r *roleRepo) List() ([]model.SysRole, error) {
@@ -161,6 +187,23 @@ func (r *userRoleRepo) GetRolePermissions(roleID int64) ([]model.SysPermission, 
 		Where("sys_role_permission.role_id = ?", roleID).
 		Find(&perms).Error
 	return perms, err
+}
+
+func (r *userRoleRepo) ReplaceUserRoles(tx *gorm.DB, userID int64, roleIDs []int64) error {
+	if tx == nil {
+		tx = r.db
+	}
+	if err := tx.Where("user_id = ?", userID).Delete(&model.SysUserRole{}).Error; err != nil {
+		return err
+	}
+	if len(roleIDs) == 0 {
+		return nil
+	}
+	bindings := make([]model.SysUserRole, 0, len(roleIDs))
+	for _, rid := range roleIDs {
+		bindings = append(bindings, model.SysUserRole{UserID: userID, RoleID: rid})
+	}
+	return tx.Create(&bindings).Error
 }
 
 type auditLogRepo struct {
