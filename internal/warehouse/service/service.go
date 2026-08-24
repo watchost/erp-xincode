@@ -1,37 +1,46 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package service
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"gorm.io/gorm"
-	mdmModel "erp-system/internal/mdm/model"
+
 	mdmRepo "erp-system/internal/mdm/repository"
+	"erp-system/internal/pkg/bizno"
+	"erp-system/internal/pkg/db"
+	"erp-system/internal/pkg/errors"
+	"erp-system/internal/pkg/idemp"
 	"erp-system/internal/warehouse/dto"
 	warehouseModel "erp-system/internal/warehouse/model"
 	"erp-system/internal/warehouse/repository"
-	"erp-system/internal/pkg/db"
-	"erp-system/internal/pkg/errors"
 )
 
 const (
-	BizTypePurchaseInbound   = 1
+	BizTypePurchaseInbound    = 1
 	BizTypeProductionOutbound = 2
-	BizTypeProductionInbound = 3
-	BizTypeInventoryCheck    = 4
-	BizTypeLocationTransfer  = 5
+	BizTypeProductionInbound  = 3
+	BizTypeInventoryCheck     = 4
+	BizTypeLocationTransfer   = 5
+	BizTypeSalesOutbound      = 6
 )
 
+// IdempotencyGuard 由 *idemp.Guard 满足；抽成接口便于单测。
+type IdempotencyGuard interface {
+	Acquire(ctx context.Context, scope, key string) error
+}
+
 type WarehouseService struct {
-	txManager       *db.TxManager
-	invRepo         repository.InventoryRepository
-	ledgerRepo      repository.StockLedgerRepository
-	materialRepo    mdmRepo.MaterialRepository
-	warehouseRepo   mdmRepo.WarehouseRepository
-	locationRepo    mdmRepo.LocationRepository
+	txManager     *db.TxManager
+	invRepo       repository.InventoryRepository
+	ledgerRepo    repository.StockLedgerRepository
+	materialRepo  mdmRepo.MaterialRepository
+	warehouseRepo mdmRepo.WarehouseRepository
+	locationRepo  mdmRepo.LocationRepository
+	numbers       *bizno.Generator
+	idemp         IdempotencyGuard
 }
 
 func NewWarehouseService(
@@ -41,82 +50,79 @@ func NewWarehouseService(
 	materialRepo mdmRepo.MaterialRepository,
 	warehouseRepo mdmRepo.WarehouseRepository,
 	locationRepo mdmRepo.LocationRepository,
+	numbers *bizno.Generator,
+	idempGuard IdempotencyGuard,
 ) *WarehouseService {
 	return &WarehouseService{
-		txManager:      txManager,
+		txManager:     txManager,
 		invRepo:       invRepo,
 		ledgerRepo:    ledgerRepo,
 		materialRepo:  materialRepo,
 		warehouseRepo: warehouseRepo,
 		locationRepo:  locationRepo,
+		numbers:       numbers,
+		idemp:         idempGuard,
 	}
 }
 
+func (s *WarehouseService) generateNo(ctx context.Context, prefix string) string {
+	if s.numbers == nil {
+		// 退化方案：不应到达这里，main 必须注入 generator
+		return prefix + time.Now().Format("20060102150405")
+	}
+	return s.numbers.Next(ctx, prefix)
+}
+
+func (s *WarehouseService) acquireIdemp(ctx context.Context, scope, key string) error {
+	if s.idemp == nil || key == "" {
+		return nil
+	}
+	if err := s.idemp.Acquire(ctx, scope, key); err != nil {
+		if err == idemp.ErrDuplicate {
+			return errors.New(10200, 429, "请求正在处理或已处理，请勿重复提交")
+		}
+		return err
+	}
+	return nil
+}
+
 func (s *WarehouseService) Inbound(ctx context.Context, req dto.InboundScanReq) (*dto.InboundScanRes, error) {
+	if err := s.acquireIdemp(ctx, "warehouse-inbound", req.IdempotencyKey); err != nil {
+		return nil, err
+	}
+
 	material, err := s.materialRepo.FindByCode(req.MaterialCode)
 	if err != nil {
 		return nil, errors.New(30002, 404, "物料不存在")
 	}
-
-	warehouse := &mdmModel.MdmWarehouse{ID: 1}
-	if req.WarehouseCode != "" {
-		warehouse, err = s.warehouseRepo.FindByCode(req.WarehouseCode)
-		if err != nil {
-			return nil, errors.New(30002, 404, "仓库不存在")
-		}
+	warehouse, err := s.warehouseRepo.FindByCode(req.WarehouseCode)
+	if err != nil {
+		return nil, errors.New(30002, 404, "仓库不存在")
 	}
-
 	location, err := s.locationRepo.FindByCode(warehouse.ID, req.LocationCode)
 	if err != nil {
 		return nil, errors.New(30002, 404, "库位不存在")
 	}
 
-	inboundNo := fmt.Sprintf("IB%v", time.Now().Unix())
+	inboundNo := s.generateNo(ctx, "IB")
 
-	var afterQty float64
+	var res dto.MoveResult
 	err = s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
-		inv, err := s.invRepo.FindByMaterialWarehouse(material.ID, warehouse.ID, location.ID)
-		if err != nil && err != gorm.ErrRecordNotFound {
-			return err
-		}
-
-		if inv == nil {
-			inv = &warehouseModel.InvInventory{
-				MaterialID:   material.ID,
-				WarehouseID:  warehouse.ID,
-				LocationID:   location.ID,
-				Qty:          0,
-				AvailableQty: 0,
-				AvgCost:      0,
-			}
-		}
-
-		if inv.Qty == 0 {
-			inv.AvgCost = 0
-		} else {
-			inv.AvgCost = (inv.AvgCost*inv.Qty + 0) / (inv.Qty + req.Qty)
-		}
-		inv.Qty += req.Qty
-		inv.AvailableQty += req.Qty
-		inv.UpdatedAt = time.Now()
-
-		if err := s.invRepo.Upsert(tx, inv); err != nil {
-			return err
-		}
-
-		afterQty = inv.Qty
-
-		return s.ledgerRepo.Append(tx, &warehouseModel.InvStockLedger{
+		r, err := s.ApplyInboundTx(ctx, tx, dto.MoveInput{
 			MaterialID:  material.ID,
 			WarehouseID: warehouse.ID,
+			LocationID:  location.ID,
+			Qty:         req.Qty,
+			UnitCost:    req.UnitCost,
 			BizType:     BizTypePurchaseInbound,
 			BizNo:       inboundNo,
-			ChangeQty:   req.Qty,
-			AfterQty:    inv.Qty,
-			CostAmount:  0,
 		})
+		if err != nil {
+			return err
+		}
+		res = r
+		return nil
 	})
-
 	if err != nil {
 		return nil, err
 	}
@@ -124,76 +130,151 @@ func (s *WarehouseService) Inbound(ctx context.Context, req dto.InboundScanReq) 
 	return &dto.InboundScanRes{
 		InboundNo: inboundNo,
 		Matched:   true,
-		DiffQty:   0,
-		AfterQty:  afterQty,
+		AfterQty:  res.AfterQty,
+		AvgCost:   res.AvgCost,
 	}, nil
 }
 
 func (s *WarehouseService) Outbound(ctx context.Context, req dto.OutboundScanReq) (*dto.InboundScanRes, error) {
+	if err := s.acquireIdemp(ctx, "warehouse-outbound", req.IdempotencyKey); err != nil {
+		return nil, err
+	}
+
 	material, err := s.materialRepo.FindByCode(req.MaterialCode)
 	if err != nil {
 		return nil, errors.New(30002, 404, "物料不存在")
 	}
-
-	warehouse := &mdmModel.MdmWarehouse{ID: 1}
-	if req.WarehouseCode != "" {
-		warehouse, err = s.warehouseRepo.FindByCode(req.WarehouseCode)
-		if err != nil {
-			return nil, errors.New(30002, 404, "仓库不存在")
-		}
+	warehouse, err := s.warehouseRepo.FindByCode(req.WarehouseCode)
+	if err != nil {
+		return nil, errors.New(30002, 404, "仓库不存在")
+	}
+	location, err := s.locationRepo.FindByCode(warehouse.ID, req.LocationCode)
+	if err != nil {
+		return nil, errors.New(30002, 404, "库位不存在")
 	}
 
-	var afterQty float64
+	outboundNo := req.OutboundNo
+	if outboundNo == "" {
+		outboundNo = s.generateNo(ctx, "OB")
+	}
+
+	var res dto.MoveResult
 	err = s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
-		var inv warehouseModel.InvInventory
-		err := tx.Where("material_id = ? AND warehouse_id = ?", material.ID, warehouse.ID).First(&inv).Error
-		if err != nil {
-			if err == gorm.ErrRecordNotFound {
-				return errors.New(30001, 409, "库存不足")
-			}
-			return err
-		}
-
-		if inv.AvailableQty < req.Qty {
-			return errors.New(30001, 409, "库存不足")
-		}
-
-		inv.Qty -= req.Qty
-		inv.AvailableQty -= req.Qty
-		inv.UpdatedAt = time.Now()
-
-		if err := tx.Save(&inv).Error; err != nil {
-			return err
-		}
-
-		afterQty = inv.Qty
-
-		outboundNo := req.OutboundNo
-		if outboundNo == "" {
-			outboundNo = fmt.Sprintf("OB%v", time.Now().Unix())
-		}
-
-		return s.ledgerRepo.Append(tx, &warehouseModel.InvStockLedger{
+		r, err := s.ApplyOutboundTx(ctx, tx, dto.MoveInput{
 			MaterialID:  material.ID,
 			WarehouseID: warehouse.ID,
+			LocationID:  location.ID,
+			Qty:         req.Qty,
 			BizType:     BizTypeProductionOutbound,
 			BizNo:       outboundNo,
-			ChangeQty:   -req.Qty,
-			AfterQty:    inv.Qty,
-			CostAmount:  inv.AvgCost * req.Qty,
 		})
+		if err != nil {
+			return err
+		}
+		res = r
+		return nil
 	})
-
 	if err != nil {
 		return nil, err
 	}
 
 	return &dto.InboundScanRes{
-		InboundNo: req.OutboundNo,
+		InboundNo: outboundNo,
 		Matched:   true,
-		DiffQty:   0,
-		AfterQty:  afterQty,
+		AfterQty:  res.AfterQty,
+		AvgCost:   res.AvgCost,
 	}, nil
+}
+
+// ApplyInboundTx 在调用方提供的事务内执行入库。
+// 供 PurchaseService 等需要把库存写入与单据更新放在同一事务里的场景使用。
+// 移动平均成本：new_avg = (old_avg*old_qty + unit_cost*in_qty) / (old_qty + in_qty)。
+// 当 unitCost 为 0（来源未知单价）时保持原 avg_cost，不再把成本冲为 0。
+func (s *WarehouseService) ApplyInboundTx(ctx context.Context, tx *gorm.DB, in dto.MoveInput) (dto.MoveResult, error) {
+	inv, err := s.invRepo.FindForUpdate(tx, in.MaterialID, in.WarehouseID, in.LocationID)
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return dto.MoveResult{}, err
+	}
+
+	if inv == nil {
+		inv = &warehouseModel.InvInventory{
+			MaterialID:   in.MaterialID,
+			WarehouseID:  in.WarehouseID,
+			LocationID:   in.LocationID,
+			Qty:          in.Qty,
+			AvailableQty: in.Qty,
+			AvgCost:      in.UnitCost,
+			UpdatedAt:    time.Now(),
+		}
+	} else {
+		oldQty, oldAvg := inv.Qty, inv.AvgCost
+		if in.UnitCost > 0 {
+			inv.AvgCost = (oldAvg*oldQty + in.UnitCost*in.Qty) / (oldQty + in.Qty)
+		}
+		inv.Qty = oldQty + in.Qty
+		inv.AvailableQty = inv.AvailableQty + in.Qty
+		inv.UpdatedAt = time.Now()
+	}
+
+	if err := s.invRepo.Upsert(tx, inv); err != nil {
+		return dto.MoveResult{}, err
+	}
+
+	costAmount := 0.0
+	if in.UnitCost > 0 {
+		costAmount = in.UnitCost * in.Qty
+	}
+	if err := s.ledgerRepo.Append(tx, &warehouseModel.InvStockLedger{
+		MaterialID:  in.MaterialID,
+		WarehouseID: in.WarehouseID,
+		BizType:     in.BizType,
+		BizNo:       in.BizNo,
+		ChangeQty:   in.Qty,
+		AfterQty:    inv.Qty,
+		CostAmount:  costAmount,
+	}); err != nil {
+		return dto.MoveResult{}, err
+	}
+
+	return dto.MoveResult{AfterQty: inv.Qty, AvgCost: inv.AvgCost}, nil
+}
+
+// ApplyOutboundTx 在调用方事务内执行出库并扣减库存。
+// 成本按当前移动加权平均单价结转：cost_amount = avg_cost * qty。
+func (s *WarehouseService) ApplyOutboundTx(ctx context.Context, tx *gorm.DB, in dto.MoveInput) (dto.MoveResult, error) {
+	inv, err := s.invRepo.FindForUpdate(tx, in.MaterialID, in.WarehouseID, in.LocationID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return dto.MoveResult{}, errors.New(30001, 409, "库存不足")
+		}
+		return dto.MoveResult{}, err
+	}
+	if inv.AvailableQty < in.Qty || inv.Qty < in.Qty {
+		return dto.MoveResult{}, errors.New(30001, 409, "库存不足")
+	}
+
+	oldAvg := inv.AvgCost
+	inv.Qty -= in.Qty
+	inv.AvailableQty -= in.Qty
+	inv.UpdatedAt = time.Now()
+
+	if err := s.invRepo.Upsert(tx, inv); err != nil {
+		return dto.MoveResult{}, err
+	}
+
+	if err := s.ledgerRepo.Append(tx, &warehouseModel.InvStockLedger{
+		MaterialID:  in.MaterialID,
+		WarehouseID: in.WarehouseID,
+		BizType:     in.BizType,
+		BizNo:       in.BizNo,
+		ChangeQty:   -in.Qty,
+		AfterQty:    inv.Qty,
+		CostAmount:  oldAvg * in.Qty,
+	}); err != nil {
+		return dto.MoveResult{}, err
+	}
+
+	return dto.MoveResult{AfterQty: inv.Qty, AvgCost: inv.AvgCost}, nil
 }
 
 func (s *WarehouseService) ListInventory(ctx context.Context, req dto.InventoryQuery) ([]dto.InventoryVO, int64, error) {
@@ -202,14 +283,13 @@ func (s *WarehouseService) ListInventory(ctx context.Context, req dto.InventoryQ
 		return nil, 0, err
 	}
 
-	var vos []dto.InventoryVO
+	vos := make([]dto.InventoryVO, 0, len(list))
 	for _, inv := range list {
 		m, _ := s.materialRepo.FindByID(inv.MaterialID)
 		w, _ := s.warehouseRepo.FindByID(inv.WarehouseID)
 		l, _ := s.locationRepo.FindByID(inv.LocationID)
 
-		materialCode := ""
-		materialName := ""
+		materialCode, materialName := "", ""
 		if m != nil {
 			materialCode = m.MaterialCode
 			materialName = m.Name
@@ -238,12 +318,10 @@ func (s *WarehouseService) ListInventory(ctx context.Context, req dto.InventoryQ
 			TotalValue:    inv.Qty * inv.AvgCost,
 		})
 	}
-
 	return vos, total, nil
 }
 
 func (s *WarehouseService) GetStockAlerts(ctx context.Context) ([]dto.StockAlertVO, error) {
-	var vos []dto.StockAlertVO
 	var inventories []warehouseModel.InvInventory
 	if err := s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
 		return tx.Where("available_qty < 10").Find(&inventories).Error
@@ -251,12 +329,11 @@ func (s *WarehouseService) GetStockAlerts(ctx context.Context) ([]dto.StockAlert
 		return nil, err
 	}
 
+	vos := make([]dto.StockAlertVO, 0, len(inventories))
 	for _, inv := range inventories {
 		m, _ := s.materialRepo.FindByID(inv.MaterialID)
 		w, _ := s.warehouseRepo.FindByID(inv.WarehouseID)
-
-		materialCode := ""
-		materialName := ""
+		materialCode, materialName := "", ""
 		if m != nil {
 			materialCode = m.MaterialCode
 			materialName = m.Name
@@ -265,12 +342,10 @@ func (s *WarehouseService) GetStockAlerts(ctx context.Context) ([]dto.StockAlert
 		if w != nil {
 			warehouseName = w.Name
 		}
-
 		level := "low"
 		if inv.AvailableQty < 5 {
 			level = "high"
 		}
-
 		vos = append(vos, dto.StockAlertVO{
 			ID:            inv.ID,
 			MaterialCode:  materialCode,
@@ -281,6 +356,5 @@ func (s *WarehouseService) GetStockAlerts(ctx context.Context) ([]dto.StockAlert
 			Level:         level,
 		})
 	}
-
 	return vos, nil
 }

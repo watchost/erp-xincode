@@ -1,14 +1,21 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package repository
 
 import (
+	"errors"
+
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
 	"erp-system/internal/warehouse/model"
 )
 
 type InventoryRepository interface {
-	FindByMaterialWarehouse(materialID, warehouseID, locationID int64) (*model.InvInventory, error)
+	// FindForUpdate 在事务内以 SELECT ... FOR UPDATE 锁定库存行，防止读-改-写竞态。
+	// 若记录不存在返回 (nil, gorm.ErrRecordNotFound)。
+	FindForUpdate(tx *gorm.DB, materialID, warehouseID, locationID int64) (*model.InvInventory, error)
+	// Upsert 插入或更新库存行（依赖 (material_id, warehouse_id, location_id) 唯一约束）。
 	Upsert(tx *gorm.DB, inv *model.InvInventory) error
 	List(warehouseID int64, materialCode, materialName string, page, pageSize int) ([]model.InvInventory, int64, error)
 }
@@ -26,22 +33,37 @@ func NewInventoryRepository(db *gorm.DB) InventoryRepository {
 	return &inventoryRepo{db: db}
 }
 
-func (r *inventoryRepo) FindByMaterialWarehouse(materialID, warehouseID, locationID int64) (*model.InvInventory, error) {
+func (r *inventoryRepo) FindForUpdate(tx *gorm.DB, materialID, warehouseID, locationID int64) (*model.InvInventory, error) {
 	var inv model.InvInventory
-	query := r.db.Where("material_id = ? AND warehouse_id = ?", materialID, warehouseID)
+	q := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("material_id = ? AND warehouse_id = ?", materialID, warehouseID)
 	if locationID > 0 {
-		query = query.Where("location_id = ?", locationID)
+		q = q.Where("location_id = ?", locationID)
 	} else {
-		query = query.Where("location_id IS NULL")
+		q = q.Where("location_id IS NULL")
 	}
-	if err := query.First(&inv).Error; err != nil {
+	if err := q.First(&inv).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, gorm.ErrRecordNotFound
+		}
 		return nil, err
 	}
 	return &inv, nil
 }
 
 func (r *inventoryRepo) Upsert(tx *gorm.DB, inv *model.InvInventory) error {
-	return tx.Save(inv).Error
+	// 依赖唯一约束 (material_id, warehouse_id, location_id) 做原子 upsert。
+	// 注意：ON CONFLICT 只更新有变化的字段，避免覆盖 FOR UPDATE 锁之外的并发写入。
+	return tx.Clauses(clause.OnConflict{
+		Columns: []clause.Column{
+			{Name: "material_id"},
+			{Name: "warehouse_id"},
+			{Name: "location_id"},
+		},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"qty", "available_qty", "avg_cost", "updated_at",
+		}),
+	}).Create(inv).Error
 }
 
 func (r *inventoryRepo) List(warehouseID int64, materialCode, materialName string, page, pageSize int) ([]model.InvInventory, int64, error) {

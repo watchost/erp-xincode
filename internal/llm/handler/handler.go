@@ -7,8 +7,10 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+
 	"erp-system/internal/llm/dto"
 	"erp-system/internal/llm/service"
+	"erp-system/internal/pkg/middleware"
 	"erp-system/internal/pkg/response"
 )
 
@@ -27,43 +29,50 @@ func (h *LLMHandler) Chat(c *gin.Context) {
 		return
 	}
 
-	userID := c.GetInt64("user_id")
+	// P0：不能再 fallback 到 1，必须来自 JWT 中间件，防止越权。
+	userID := c.GetInt64(middleware.CtxUserID)
 	if userID == 0 {
-		userID = 1
+		c.JSON(http.StatusUnauthorized, response.Err(10001, "未认证"))
+		return
 	}
 
 	res, err := h.llmService.Chat(c.Request.Context(), userID, req)
 	if err != nil {
-		c.JSON(http.StatusOK, response.FromError(err))
+		response.Fail(c, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, response.OK(res))
+	response.Success(c, res)
 }
 
 func (h *LLMHandler) GetHistory(c *gin.Context) {
-	sessionID, _ := strconv.ParseInt(c.Param("session_id"), 10, 64)
-
-	messages, err := h.llmService.GetSessionHistory(c.Request.Context(), sessionID)
-	if err != nil {
-		c.JSON(http.StatusOK, response.FromError(err))
+	sessionID, err := strconv.ParseInt(c.Param("session_id"), 10, 64)
+	if err != nil || sessionID <= 0 {
+		response.BadRequest(c, "无效的会话ID")
 		return
 	}
 
-	c.JSON(http.StatusOK, response.OK(messages))
+	messages, err := h.llmService.GetSessionHistory(c.Request.Context(), sessionID)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+
+	response.Success(c, messages)
 }
 
 func (h *LLMHandler) ListSessions(c *gin.Context) {
-	userID := c.GetInt64("user_id")
+	userID := c.GetInt64(middleware.CtxUserID)
 	if userID == 0 {
-		userID = 1
+		c.JSON(http.StatusUnauthorized, response.Err(10001, "未认证"))
+		return
 	}
 
 	sessions, err := h.llmService.ListSessions(c.Request.Context(), userID)
 	if err != nil {
-		c.JSON(http.StatusOK, response.FromError(err))
+		response.Fail(c, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, response.OK(sessions))
+	response.Success(c, sessions)
 }

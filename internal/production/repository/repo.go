@@ -4,6 +4,8 @@ package repository
 
 import (
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
 	"erp-system/internal/production/model"
 )
 
@@ -13,8 +15,13 @@ type WorkOrderRepository interface {
 	FindByWorkOrderNo(workOrderNo string) (*model.ProWorkOrder, error)
 	List(workOrderNo string, productID int64, status int, page, pageSize int) ([]model.ProWorkOrder, int64, error)
 	FindMaterials(workOrderID int64) ([]model.ProWorkOrderMaterial, error)
+
+	// 事务内加锁读，防止并发领料超发。
+	FindByWorkOrderNoForUpdate(tx *gorm.DB, workOrderNo string) (*model.ProWorkOrder, error)
+	FindMaterialForUpdate(tx *gorm.DB, id int64) (*model.ProWorkOrderMaterial, error)
+
 	UpdateMaterialIssuedQty(tx *gorm.DB, materialID int64, qty float64) error
-	UpdateWorkOrderStatus(tx *gorm.DB, workOrderID int64, status int) error
+	UpdateWorkOrderStatus(tx *gorm.DB, workOrderID int64, status int, fields map[string]interface{}) error
 }
 
 type BomRepository interface {
@@ -49,6 +56,24 @@ func (r *workOrderRepo) FindByWorkOrderNo(workOrderNo string) (*model.ProWorkOrd
 		return nil, err
 	}
 	return &order, nil
+}
+
+func (r *workOrderRepo) FindByWorkOrderNoForUpdate(tx *gorm.DB, workOrderNo string) (*model.ProWorkOrder, error) {
+	var order model.ProWorkOrder
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("work_order_no = ?", workOrderNo).First(&order).Error; err != nil {
+		return nil, err
+	}
+	return &order, nil
+}
+
+func (r *workOrderRepo) FindMaterialForUpdate(tx *gorm.DB, id int64) (*model.ProWorkOrderMaterial, error) {
+	var m model.ProWorkOrderMaterial
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ?", id).First(&m).Error; err != nil {
+		return nil, err
+	}
+	return &m, nil
 }
 
 func (r *workOrderRepo) List(workOrderNo string, productID int64, status int, page, pageSize int) ([]model.ProWorkOrder, int64, error) {
@@ -87,10 +112,12 @@ func (r *workOrderRepo) UpdateMaterialIssuedQty(tx *gorm.DB, materialID int64, q
 		Update("issued_qty", gorm.Expr("issued_qty + ?", qty)).Error
 }
 
-func (r *workOrderRepo) UpdateWorkOrderStatus(tx *gorm.DB, workOrderID int64, status int) error {
-	return tx.Model(&model.ProWorkOrder{}).
-		Where("id = ?", workOrderID).
-		Update("status", status).Error
+func (r *workOrderRepo) UpdateWorkOrderStatus(tx *gorm.DB, workOrderID int64, status int, fields map[string]interface{}) error {
+	if fields == nil {
+		fields = map[string]interface{}{}
+	}
+	fields["status"] = status
+	return tx.Model(&model.ProWorkOrder{}).Where("id = ?", workOrderID).Updates(fields).Error
 }
 
 type bomRepo struct {
