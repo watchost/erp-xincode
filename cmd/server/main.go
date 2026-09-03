@@ -199,8 +199,44 @@ func main() {
 		r.Use(middleware.Timeout(reqTimeout))
 	}
 
+	// 健康检查（公开，不走 JWT）：
+	//   /healthz 存活探针——进程能响应即 200；
+	//   /readyz  就绪探针——探测 DB 与 Redis，任一不可用返回 503。
+	r.GET("/healthz", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+	r.GET("/readyz", func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+		defer cancel()
+
+		checks := gin.H{}
+		ready := true
+		if sqlDB, err := dbConn.DB(); err != nil {
+			ready = false
+			checks["db"] = "fail: " + err.Error()
+		} else if err := sqlDB.PingContext(ctx); err != nil {
+			ready = false
+			checks["db"] = "fail: " + err.Error()
+		} else {
+			checks["db"] = "ok"
+		}
+		if err := rdb.Client().Ping(ctx).Err(); err != nil {
+			ready = false
+			checks["redis"] = "fail: " + err.Error()
+		} else {
+			checks["redis"] = "ok"
+		}
+
+		if !ready {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not ready", "checks": checks})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ready", "checks": checks})
+	})
+
 	routes.RegisterRoutes(r, routes.Deps{
 		JWTSecret:  jwtSecret,
+		LoginLimit: middleware.LoginRateLimit(rdb, 10, time.Minute),
 		IAM:        iamH,
 		MDM:        mdmH,
 		Warehouse:  warehouseH,

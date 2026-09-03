@@ -55,8 +55,9 @@ const (
 
 // Deps bundles all HTTP handlers and infrastructure config needed for routing.
 type Deps struct {
-	JWTSecret   string
-	IAM         *iamHandler.IAMHandler
+	JWTSecret     string
+	LoginLimit    gin.HandlerFunc // 可选：登录限流中间件，为 nil 时不限流
+	IAM           *iamHandler.IAMHandler
 	MDM         *mdmHandler.MDMHandler
 	Warehouse   *warehouseHandler.WarehouseHandler
 	Purchase    *purchaseHandler.PurchaseHandler
@@ -73,8 +74,13 @@ type Deps struct {
 // - All /api/v1 business endpoints require a valid JWT.
 // - Mutating/sensitive endpoints additionally require a permission code.
 func RegisterRoutes(r *gin.Engine, d Deps) {
-	// 公开接口：不需要登录
-	r.POST("/api/v1/login", d.IAM.Login)
+	// 公开接口：不需要登录。登录接口叠加限流中间件（若装配）以缓解在线爆破。
+	loginChain := make([]gin.HandlerFunc, 0, 2)
+	if d.LoginLimit != nil {
+		loginChain = append(loginChain, d.LoginLimit)
+	}
+	loginChain = append(loginChain, d.IAM.Login)
+	r.POST("/api/v1/login", loginChain...)
 	r.POST("/api/v1/refresh", d.IAM.RefreshToken)
 
 	// OpenAPI 对外网关：OAuth2 取 token 不走内部 JWT
