@@ -102,3 +102,19 @@ func (h *FinanceHandler) ListBudgets(c *gin.Context) {
 
 	c.JSON(http.StatusOK, response.Page(list, total, page, pageSize))
 }
+
+func (h *FinanceHandler) CreateBudget(c *gin.Context) {
+	var req dto.CreateBudgetReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, response.Err(10005, "参数错误: "+err.Error()))
+		return
+	}
+
+	vo, err := h.financeService.CreateBudget(c.Request.Context(), req.BudgetType, req.Amount, req.Year, req.Month)
+	if err != nil {
+		c.JSON(http.StatusOK, response.FromError(err))
+		return
+	}
+
+	c.JSON(http.StatusOK, response.OK(vo))
+}

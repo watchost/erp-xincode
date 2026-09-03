@@ -156,6 +156,7 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 			finance.GET("/account-entries", middleware.RequirePermission(PermFinanceReports), d.Finance.ListAccountEntries)
 			finance.GET("/financial-report", middleware.RequirePermission(PermFinanceReports), d.Finance.GetFinancialReport)
 			finance.GET("/budgets", middleware.RequirePermission(PermFinanceBudget), d.Finance.ListBudgets)
+			finance.POST("/budgets", middleware.RequirePermission(PermFinanceBudget), d.Finance.CreateBudget)
 		}
 
 		dashboard := api.Group("/dashboard")

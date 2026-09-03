@@ -42,6 +42,12 @@ const (
 	CostTypeOverhead = "overhead" // 制造费用
 )
 
+// 预算类型，与 fin_budget.budget_type 一致。
+const (
+	BudgetTypePurchase   = "purchase"   // 采购预算
+	BudgetTypeProduction = "production" // 生产预算
+)
+
 // PostingLine 是一条会计分录行：借贷必须恰有一方 > 0。
 type PostingLine struct {
 	AccountCode string

@@ -37,6 +37,11 @@ type BudgetRepository interface {
 	List(budgetType string, year, month int, page, pageSize int) ([]model.FinBudget, int64, error)
 	FindByTypeAndPeriod(budgetType string, year, month int) (*model.FinBudget, error)
 	UpdateUsedAmount(tx *gorm.DB, budgetID int64, amount float64) error
+	// ReserveAtomic 在调用方事务内原子占用预算：仅当 used_amount+amount<=amount 时
+	// 累加 used_amount 并返回 (exists=true, ok=true)。预算行不存在返回
+	// (exists=false, ok=false)（表示本期未设预算，调用方可选择不强制）；
+	// 预算存在但余额不足返回 (exists=true, ok=false)。单条条件 UPDATE，并发安全。
+	ReserveAtomic(tx *gorm.DB, budgetType string, year, month int, amount float64) (exists bool, ok bool, err error)
 }
 
 type costCardRepo struct {
@@ -212,4 +217,29 @@ func (r *budgetRepo) UpdateUsedAmount(tx *gorm.DB, budgetID int64, amount float6
 	return tx.Model(&model.FinBudget{}).
 		Where("id = ?", budgetID).
 		Update("used_amount", gorm.Expr("used_amount + ?", amount)).Error
+}
+
+func (r *budgetRepo) ReserveAtomic(tx *gorm.DB, budgetType string, year, month int, amount float64) (bool, bool, error) {
+	res := tx.Model(&model.FinBudget{}).
+		Where("budget_type = ? AND year = ? AND month = ? AND used_amount + ? <= amount",
+			budgetType, year, month, amount).
+		Update("used_amount", gorm.Expr("used_amount + ?", amount))
+	if res.Error != nil {
+		return false, false, res.Error
+	}
+	if res.RowsAffected > 0 {
+		return true, true, nil
+	}
+
+	// 条件更新未命中：区分「本期无预算」与「预算不足」。
+	var count int64
+	if err := tx.Model(&model.FinBudget{}).
+		Where("budget_type = ? AND year = ? AND month = ?", budgetType, year, month).
+		Count(&count).Error; err != nil {
+		return false, false, err
+	}
+	if count == 0 {
+		return false, false, nil
+	}
+	return true, false, nil
 }

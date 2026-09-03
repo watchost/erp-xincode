@@ -31,6 +31,13 @@ const (
 	OrderStatusCanceled  = 4
 )
 
+// financeGateway 聚合采购流程需要的财务同事务能力：凭证过账 + 预算占用。
+// 由 *financeService.FinanceService 满足。
+type financeGateway interface {
+	financeService.Poster
+	ReserveBudgetTx(ctx context.Context, tx *gorm.DB, budgetType string, amount float64) error
+}
+
 type PurchaseService struct {
 	txManager        *db.TxManager
 	orderRepo        repository.PurchaseOrderRepository
@@ -40,7 +47,7 @@ type PurchaseService struct {
 	warehouseRepo    mdmRepo.WarehouseRepository
 	locationRepo     mdmRepo.LocationRepository
 	warehouseService *warehouseService.WarehouseService
-	finance          financeService.Poster
+	finance          financeGateway
 	numbers          *bizno.Generator
 	idemp            interface {
 		Acquire(ctx context.Context, scope, key string) error
@@ -56,7 +63,7 @@ func NewPurchaseService(
 	warehouseRepo mdmRepo.WarehouseRepository,
 	locationRepo mdmRepo.LocationRepository,
 	warehouseService *warehouseService.WarehouseService,
-	finance financeService.Poster,
+	finance financeGateway,
 	numbers *bizno.Generator,
 	idempGuard interface {
 		Acquire(ctx context.Context, scope, key string) error
@@ -152,6 +159,13 @@ func (s *PurchaseService) ApproveOrder(ctx context.Context, orderNo string) erro
 		if order.Status != OrderStatusDraft {
 			return errors.New(40004, 409, "订单状态不允许审批")
 		}
+
+		// 审批即采购承诺：在同事务内原子占用本期采购预算。
+		// 本期未设预算则不强制；余额不足返回错误，随审批事务一并回滚。
+		if err := s.finance.ReserveBudgetTx(ctx, tx, financeService.BudgetTypePurchase, order.TotalAmount); err != nil {
+			return err
+		}
+
 		return s.orderRepo.UpdateOrderStatus(tx, order.ID, OrderStatusApproved, map[string]interface{}{
 			"approved_at": time.Now(),
 		})

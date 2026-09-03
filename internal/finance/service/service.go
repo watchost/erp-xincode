@@ -14,6 +14,7 @@ import (
 	"erp-system/internal/finance/repository"
 	"erp-system/internal/pkg/bizno"
 	"erp-system/internal/pkg/db"
+	"erp-system/internal/pkg/errors"
 )
 
 type FinanceService struct {
@@ -261,6 +262,16 @@ func (s *FinanceService) CreateBudget(ctx context.Context, budgetType string, am
 
 	var budget model.FinBudget
 	err := s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
+		// 同类型+年月唯一：预检给出友好提示，DB 唯一约束兜底并发。
+		var count int64
+		if err := tx.Model(&model.FinBudget{}).
+			Where("budget_type = ? AND year = ? AND month = ?", budgetType, year, month).
+			Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return errors.New(60011, 409, "本期该类型预算已存在，请勿重复创建")
+		}
 		budget = model.FinBudget{
 			BudgetNo:   budgetNo,
 			BudgetType: budgetType,
@@ -281,11 +292,49 @@ func (s *FinanceService) CreateBudget(ctx context.Context, budgetType string, am
 		ID:              budget.ID,
 		BudgetNo:        budget.BudgetNo,
 		BudgetType:      budget.BudgetType,
+		BudgetTypeName:  budgetTypeName(budget.BudgetType),
 		Amount:          budget.Amount,
 		UsedAmount:      budget.UsedAmount,
 		RemainingAmount: budget.Amount - budget.UsedAmount,
 		Year:            budget.Year,
 		Month:           budget.Month,
 		Status:          budget.Status,
+		StatusDesc:      "预算中",
+		CreatedAt:       budget.CreatedAt.Format(time.RFC3339),
 	}, nil
+}
+
+func budgetTypeName(budgetType string) string {
+	switch budgetType {
+	case "purchase":
+		return "采购预算"
+	case "production":
+		return "生产预算"
+	case "marketing":
+		return "营销预算"
+	case "admin":
+		return "管理费用"
+	}
+	return ""
+}
+
+// ReserveBudgetTx 在调用方事务内原子占用本期（当前年月）指定类型的预算。
+// 本期未设置预算时不强制（返回 nil，视为不启用预算控制）；预算余额不足返回错误，
+// 由调用方随业务事务一并回滚。条件更新在 DB 层完成，并发审批不会超额占用。
+func (s *FinanceService) ReserveBudgetTx(ctx context.Context, tx *gorm.DB, budgetType string, amount float64) error {
+	if amount <= 0 {
+		return nil
+	}
+	now := time.Now()
+	exists, ok, err := s.budgetRepo.ReserveAtomic(tx, budgetType, now.Year(), int(now.Month()), amount)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	if !ok {
+		return errors.New(60010, 409, "本期预算余额不足，单据已被拒绝")
+	}
+	return nil
 }

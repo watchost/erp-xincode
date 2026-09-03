@@ -83,3 +83,11 @@ type BudgetVO struct {
 	StatusDesc      string  `json:"status_desc"`
 	CreatedAt       string  `json:"created_at"`
 }
+
+// CreateBudgetReq 创建预算。budget_type 限定在四类；同一类型+年月唯一。
+type CreateBudgetReq struct {
+	BudgetType string  `json:"budget_type" binding:"required,oneof=purchase production marketing admin"`
+	Amount     float64 `json:"amount" binding:"required,gt=0"`
+	Year       int     `json:"year" binding:"required,min=2000,max=2100"`
+	Month      int     `json:"month" binding:"required,min=1,max=12"`
+}
