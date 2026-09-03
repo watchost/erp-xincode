@@ -37,9 +37,9 @@ type DeviceVO struct {
 }
 
 type DeviceListReq struct {
-	DeviceCode string `json:"device_code"`
-	Type       int    `json:"type"`
-	Status     int    `json:"status"`
-	Page       int    `json:"page" binding:"min=1"`
-	PageSize   int    `json:"page_size" binding:"min=1,max=100"`
+	DeviceCode string `form:"device_code" json:"device_code"`
+	Type       int    `form:"type" json:"type"`
+	Status     int    `form:"status" json:"status"`
+	Page       int    `form:"page" json:"page" binding:"min=1"`
+	PageSize   int    `form:"page_size" json:"page_size" binding:"min=1,max=100"`
 }

@@ -28,7 +28,8 @@ CREATE TABLE sys_permission (
     name        VARCHAR(64)  NOT NULL,
     type        SMALLINT     NOT NULL,
     parent_id   BIGINT,
-    path        VARCHAR(255)
+    path        VARCHAR(255),
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX uk_sys_permission_code ON sys_permission(code);
 
@@ -248,7 +249,7 @@ CREATE TABLE llm_message (
 CREATE INDEX idx_llm_msg_session ON llm_message(session_id, created_at);
 
 INSERT INTO sys_user (username, password_hash, real_name, phone, status) VALUES
-('admin', '$2a$10$N9qo8uLOickgx2ZMRZoMye.IjzqAKL9xL5jvMFVdNJHvGCgTq/VEq', '系统管理员', '13800138000', 1);
+('admin', '$2b$12$D9cL/BkqNohysAgsEnPDMeJVoPTIZ3HDk.cTi3ZExQ/pcCCIEDPxO', '系统管理员', '13800138000', 1);
 
 INSERT INTO sys_role (code, name, data_scope) VALUES
 ('admin', '超级管理员', 1),
@@ -276,14 +277,20 @@ INSERT INTO sys_permission (code, name, type, parent_id, path) VALUES
 ('mdm:supplier', '供应商管理', 1, NULL, '/mdm/suppliers'),
 ('mdm:warehouse', '仓库管理', 1, NULL, '/mdm/warehouses'),
 ('iam:user', '用户管理', 1, NULL, '/iam/users'),
-('iam:role', '角色管理', 1, NULL, '/iam/roles');
+('iam:role', '角色管理', 1, NULL, '/iam/roles'),
+('dashboard:llm', 'LLM智能分析', 2, NULL, NULL),
+('finance:budget', '预算管理', 1, NULL, '/finance/budget'),
+('mdm:location', '库位管理', 1, NULL, '/mdm/locations'),
+('device:manage', '设备管理', 1, NULL, '/device/list'),
+('llm:chat', 'LLM对话', 2, NULL, NULL),
+('openapi:admin', '开放接口管理', 1, NULL, '/openapi');
 
 INSERT INTO sys_user_role (user_id, role_id) VALUES
 (1, 1);
 
-INSERT INTO sys_role_permission (role_id, permission_id) VALUES
-(1, 1), (1, 2), (1, 3), (1, 4), (1, 5), (1, 6), (1, 7), (1, 8),
-(1, 9), (1, 10), (1, 11), (1, 12), (1, 13), (1, 14), (1, 15), (1, 16), (1, 17);
+-- 超级管理员角色(role_id=1) 拥有全部权限；用 SELECT 而非硬编码 id，避免新增权限后漏授权
+INSERT INTO sys_role_permission (role_id, permission_id)
+SELECT 1, id FROM sys_permission;
 
 INSERT INTO mdm_warehouse (code, name, type) VALUES
 ('WH001', '主仓库', 1),

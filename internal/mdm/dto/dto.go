@@ -16,10 +16,10 @@ type MaterialVO struct {
 }
 
 type MaterialListReq struct {
-	MaterialCode string `json:"material_code"`
-	Name         string `json:"name"`
-	Page         int    `json:"page" binding:"min=1"`
-	PageSize     int    `json:"page_size" binding:"min=1,max=100"`
+	MaterialCode string `form:"material_code" json:"material_code"`
+	Name         string `form:"name" json:"name"`
+	Page         int    `form:"page" json:"page" binding:"min=1"`
+	PageSize     int    `form:"page_size" json:"page_size" binding:"min=1,max=100"`
 }
 
 type SupplierVO struct {
@@ -33,10 +33,10 @@ type SupplierVO struct {
 }
 
 type SupplierListReq struct {
-	SupplierCode string `json:"supplier_code"`
-	Name         string `json:"name"`
-	Page         int    `json:"page" binding:"min=1"`
-	PageSize     int    `json:"page_size" binding:"min=1,max=100"`
+	SupplierCode string `form:"supplier_code" json:"supplier_code"`
+	Name         string `form:"name" json:"name"`
+	Page         int    `form:"page" json:"page" binding:"min=1"`
+	PageSize     int    `form:"page_size" json:"page_size" binding:"min=1,max=100"`
 }
 
 type WarehouseVO struct {

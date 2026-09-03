@@ -96,7 +96,7 @@
           <el-dropdown @command="handleCommand">
             <span class="user-info">
               <el-icon><Avatar /></el-icon>
-              {{ userInfo.real_name || '管理员' }}
+              {{ userInfo?.real_name || '管理员' }}
             </span>
             <template #dropdown>
               <el-dropdown-menu>
@@ -116,7 +116,7 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/store/user'
 import { ElMessageBox } from 'element-plus'
@@ -126,7 +126,14 @@ const router = useRouter()
 const userStore = useUserStore()
 
 const activeMenu = computed(() => route.path)
-const userInfo = computed(() => userStore.userInfo)
+const userInfo = computed(() => userStore.userInfo || {})
+
+// 刷新页面后用户信息可能缺失（或本地缓存损坏），有 token 时补拉一次
+onMounted(() => {
+  if (userStore.token && !userStore.userInfo?.real_name) {
+    userStore.fetchUserInfo()
+  }
+})
 
 function handleCommand(cmd) {
   if (cmd === 'logout') {

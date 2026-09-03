@@ -3,12 +3,12 @@
 package dto
 
 type CostCardQuery struct {
-	ProductID   int64  `json:"product_id"`
-	CostType    string `json:"cost_type"`
-	StartDate   string `json:"start_date"`
-	EndDate     string `json:"end_date"`
-	Page        int    `json:"page" binding:"min=1"`
-	PageSize    int    `json:"page_size" binding:"min=1,max=100"`
+	ProductID   int64  `form:"product_id" json:"product_id"`
+	CostType    string `form:"cost_type" json:"cost_type"`
+	StartDate   string `form:"start_date" json:"start_date"`
+	EndDate     string `form:"end_date" json:"end_date"`
+	Page        int    `form:"page" json:"page" binding:"min=1"`
+	PageSize    int    `form:"page_size" json:"page_size" binding:"min=1,max=100"`
 }
 
 type CostCardVO struct {
@@ -35,13 +35,13 @@ type CostSummaryVO struct {
 }
 
 type AccountEntryQuery struct {
-	AccountCode   string `json:"account_code"`
-	BizType       string `json:"biz_type"`
-	BizNo         string `json:"biz_no"`
-	StartDate     string `json:"start_date"`
-	EndDate       string `json:"end_date"`
-	Page          int    `json:"page" binding:"min=1"`
-	PageSize      int    `json:"page_size" binding:"min=1,max=100"`
+	AccountCode   string `form:"account_code" json:"account_code"`
+	BizType       string `form:"biz_type" json:"biz_type"`
+	BizNo         string `form:"biz_no" json:"biz_no"`
+	StartDate     string `form:"start_date" json:"start_date"`
+	EndDate       string `form:"end_date" json:"end_date"`
+	Page          int    `form:"page" json:"page" binding:"min=1"`
+	PageSize      int    `form:"page_size" json:"page_size" binding:"min=1,max=100"`
 }
 
 type AccountEntryVO struct {

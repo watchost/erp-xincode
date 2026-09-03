@@ -26,7 +26,7 @@ export function getPermissions() {
 
 export function listUsers(params) {
   return request({
-    url: '/users',
+    url: '/iam/users',
     method: 'get',
     params
   })
@@ -34,7 +34,7 @@ export function listUsers(params) {
 
 export function createUser(data) {
   return request({
-    url: '/users',
+    url: '/iam/users',
     method: 'post',
     data
   })
@@ -42,7 +42,7 @@ export function createUser(data) {
 
 export function updateUser(id, data) {
   return request({
-    url: `/users/${id}`,
+    url: `/iam/users/${id}`,
     method: 'put',
     data
   })

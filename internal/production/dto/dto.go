@@ -37,11 +37,11 @@ type WorkOrderMaterialVO struct {
 }
 
 type WorkOrderListReq struct {
-	WorkOrderNo string `json:"work_order_no"`
-	ProductID   int64  `json:"product_id"`
-	Status      int    `json:"status"`
-	Page        int    `json:"page" binding:"min=1"`
-	PageSize    int    `json:"page_size" binding:"min=1,max=100"`
+	WorkOrderNo string `form:"work_order_no" json:"work_order_no"`
+	ProductID   int64  `form:"product_id" json:"product_id"`
+	Status      int    `form:"status" json:"status"`
+	Page        int    `form:"page" json:"page" binding:"min=1"`
+	PageSize    int    `form:"page_size" json:"page_size" binding:"min=1,max=100"`
 }
 
 type MaterialIssueScanReq struct {
