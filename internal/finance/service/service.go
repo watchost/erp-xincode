@@ -12,6 +12,7 @@ import (
 	"erp-system/internal/finance/dto"
 	"erp-system/internal/finance/model"
 	"erp-system/internal/finance/repository"
+	"erp-system/internal/pkg/bizno"
 	"erp-system/internal/pkg/db"
 )
 
@@ -21,6 +22,7 @@ type FinanceService struct {
 	accountEntryRepo    repository.AccountEntryRepository
 	budgetRepo          repository.BudgetRepository
 	materialRepo        mdmRepo.MaterialRepository
+	numbers             *bizno.Generator
 }
 
 func NewFinanceService(
@@ -29,6 +31,7 @@ func NewFinanceService(
 	accountEntryRepo repository.AccountEntryRepository,
 	budgetRepo repository.BudgetRepository,
 	materialRepo mdmRepo.MaterialRepository,
+	numbers *bizno.Generator,
 ) *FinanceService {
 	return &FinanceService{
 		txManager:        txManager,
@@ -36,6 +39,7 @@ func NewFinanceService(
 		accountEntryRepo: accountEntryRepo,
 		budgetRepo:       budgetRepo,
 		materialRepo:     materialRepo,
+		numbers:          numbers,
 	}
 }
 
@@ -138,27 +142,52 @@ func (s *FinanceService) ListAccountEntries(ctx context.Context, req dto.Account
 	return vos, total, nil
 }
 
+// GetFinancialReport 生成财务简表。
+// 资产负债表为时点数：取期末（< periodEnd）累计余额；利润表为期间数：取本月发生额。
+// 科目方向遵循 Chinese GAAP：
+//   - 资产类 1xxx 借增、生产成本 5001 借余（在产品，视同存货资产）；
+//   - 负债类 2xxx 贷增（SumBalance 借-贷为负，取反得负债余额）；
+//   - 收入类 6001/6051（前缀 60）贷方发生，取 -SumBalance；
+//   - 营业成本类 6401/6402（前缀 64）借方发生，取 SumBalance。
 func (s *FinanceService) GetFinancialReport(ctx context.Context, period string) (*dto.FinancialReportVO, error) {
-	endDate := time.Now().Format("2006-01-02")
+	now := time.Now()
+	year, month := now.Year(), int(now.Month())
 	if period != "" {
-		endDate = period + "-01"
+		if t, err := time.Parse("2006-01", period); err == nil {
+			year, month = t.Year(), int(t.Month())
+		}
 	}
+	periodStart := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.Local)
+	periodEnd := periodStart.AddDate(0, 1, 0) // 次月 1 日，区间左闭右开
 
-	totalAssets, _ := s.accountEntryRepo.GetBalance("1000", endDate)
-	totalLiabilities, _ := s.accountEntryRepo.GetBalance("2000", endDate)
+	// 资产负债表（时点，期末累计）
+	inventoryAssets, err := s.accountEntryRepo.SumBalance("1", nil, &periodEnd)
+	if err != nil {
+		return nil, err
+	}
+	wipAssets, err := s.accountEntryRepo.SumBalance("5", nil, &periodEnd) // 生产成本借余=在产品
+	if err != nil {
+		return nil, err
+	}
+	totalAssets := inventoryAssets + wipAssets
 
-	var totalRevenue, totalCost float64
-	_ = s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
-		return tx.Model(&model.FinAccountEntry{}).
-			Where("account_code LIKE '5%' AND created_at <= ?", endDate).
-			Select("SUM(debit_amount)").Scan(&totalRevenue).Error
-	})
+	liabilityNet, err := s.accountEntryRepo.SumBalance("2", nil, &periodEnd)
+	if err != nil {
+		return nil, err
+	}
+	totalLiabilities := -liabilityNet // 负债为贷方余额
 
-	_ = s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
-		return tx.Model(&model.FinAccountEntry{}).
-			Where("account_code LIKE '6%' AND created_at <= ?", endDate).
-			Select("SUM(debit_amount)").Scan(&totalCost).Error
-	})
+	// 利润表（本月期间发生额）
+	revenueNet, err := s.accountEntryRepo.SumBalance("60", &periodStart, &periodEnd)
+	if err != nil {
+		return nil, err
+	}
+	totalRevenue := -revenueNet // 收入为贷方发生
+
+	totalCost, err := s.accountEntryRepo.SumBalance("64", &periodStart, &periodEnd)
+	if err != nil {
+		return nil, err
+	}
 
 	grossProfit := totalRevenue - totalCost
 	grossMargin := 0.0
@@ -167,14 +196,14 @@ func (s *FinanceService) GetFinancialReport(ctx context.Context, period string) 
 	}
 
 	return &dto.FinancialReportVO{
-		Period:         period,
-		TotalRevenue:   totalRevenue,
-		TotalCost:      totalCost,
-		GrossProfit:    grossProfit,
-		GrossMargin:    grossMargin,
-		TotalAssets:    totalAssets,
+		Period:           fmt.Sprintf("%04d-%02d", year, month),
+		TotalRevenue:     totalRevenue,
+		TotalCost:        totalCost,
+		GrossProfit:      grossProfit,
+		GrossMargin:      grossMargin,
+		TotalAssets:      totalAssets,
 		TotalLiabilities: totalLiabilities,
-		NetAssets:      totalAssets - totalLiabilities,
+		NetAssets:        totalAssets - totalLiabilities,
 	}, nil
 }
 

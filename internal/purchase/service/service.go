@@ -4,10 +4,12 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
 
+	financeService "erp-system/internal/finance/service"
 	mdmModel "erp-system/internal/mdm/model"
 	mdmRepo "erp-system/internal/mdm/repository"
 	"erp-system/internal/pkg/auth"
@@ -38,6 +40,7 @@ type PurchaseService struct {
 	warehouseRepo    mdmRepo.WarehouseRepository
 	locationRepo     mdmRepo.LocationRepository
 	warehouseService *warehouseService.WarehouseService
+	finance          financeService.Poster
 	numbers          *bizno.Generator
 	idemp            interface {
 		Acquire(ctx context.Context, scope, key string) error
@@ -53,6 +56,7 @@ func NewPurchaseService(
 	warehouseRepo mdmRepo.WarehouseRepository,
 	locationRepo mdmRepo.LocationRepository,
 	warehouseService *warehouseService.WarehouseService,
+	finance financeService.Poster,
 	numbers *bizno.Generator,
 	idempGuard interface {
 		Acquire(ctx context.Context, scope, key string) error
@@ -67,6 +71,7 @@ func NewPurchaseService(
 		warehouseRepo:    warehouseRepo,
 		locationRepo:     locationRepo,
 		warehouseService: warehouseService,
+		finance:          finance,
 		numbers:          numbers,
 		idemp:            idempGuard,
 	}
@@ -308,6 +313,28 @@ func (s *PurchaseService) InboundScan(ctx context.Context, req dto.PurchaseInbou
 			CreatedBy:   auth.UserIDFromContext(ctx),
 		}
 		if err := s.inboundRepo.Create(tx, &inbound); err != nil {
+			return err
+		}
+
+		// 同事务过账：借 原材料（1403）/ 贷 应付账款（2202），并写材料成本卡。
+		// 金额=采购单价×入库数量；任一分录失败随业务事务一并回滚。
+		amount := locked.Price * req.Qty
+		if err := s.finance.PostTx(ctx, tx, financeService.PostingInput{
+			BizType:     financeService.BizTypePurchaseInbound,
+			BizNo:       inboundNo,
+			Description: fmt.Sprintf("采购入库 %s（订单 %s）", inboundNo, req.OrderNo),
+			Lines: []financeService.PostingLine{
+				{AccountCode: financeService.AccountRawMaterials, AccountName: "原材料", Debit: amount},
+				{AccountCode: financeService.AccountsPayable, AccountName: "应付账款", Credit: amount},
+			},
+			CostCards: []financeService.CostCardInput{{
+				ProductID:  material.ID,
+				CostType:   financeService.CostTypeMaterial,
+				Amount:     amount,
+				SourceType: financeService.CostSourcePurchaseInbound,
+				SourceID:   inbound.ID,
+			}},
+		}); err != nil {
 			return err
 		}
 

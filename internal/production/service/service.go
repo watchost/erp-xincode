@@ -4,10 +4,12 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
 
+	financeService "erp-system/internal/finance/service"
 	mdmModel "erp-system/internal/mdm/model"
 	mdmRepo "erp-system/internal/mdm/repository"
 	"erp-system/internal/pkg/auth"
@@ -37,6 +39,7 @@ type ProductionService struct {
 	warehouseRepo    mdmRepo.WarehouseRepository
 	locationRepo     mdmRepo.LocationRepository
 	warehouseService *warehouseService.WarehouseService
+	finance          financeService.Poster
 	numbers          *bizno.Generator
 	idemp            interface {
 		Acquire(ctx context.Context, scope, key string) error
@@ -51,6 +54,7 @@ func NewProductionService(
 	warehouseRepo mdmRepo.WarehouseRepository,
 	locationRepo mdmRepo.LocationRepository,
 	warehouseService *warehouseService.WarehouseService,
+	finance financeService.Poster,
 	numbers *bizno.Generator,
 	idempGuard interface {
 		Acquire(ctx context.Context, scope, key string) error
@@ -64,6 +68,7 @@ func NewProductionService(
 		warehouseRepo:    warehouseRepo,
 		locationRepo:     locationRepo,
 		warehouseService: warehouseService,
+		finance:          finance,
 		numbers:          numbers,
 		idemp:            idempGuard,
 	}
@@ -309,6 +314,21 @@ func (s *ProductionService) MaterialIssueScan(ctx context.Context, req dto.Mater
 		remaining = locked.PlanQty - locked.IssuedQty - req.Qty
 
 		if err := s.workOrderRepo.UpdateMaterialIssuedQty(tx, locked.ID, req.Qty); err != nil {
+			return err
+		}
+
+		// 同事务过账：借 生产成本（5001）/ 贷 原材料（1403）。
+		// 金额按本次出库结转的移动加权平均成本（moveRes.CostAmount），
+		// 与库存台账 cost_amount 口径一致；失败随领料事务一并回滚。
+		if err := s.finance.PostTx(ctx, tx, financeService.PostingInput{
+			BizType:     financeService.BizTypeProductionIssue,
+			BizNo:       outboundNo,
+			Description: fmt.Sprintf("生产领料 %s（工单 %s）", outboundNo, req.WorkOrderNo),
+			Lines: []financeService.PostingLine{
+				{AccountCode: financeService.AccountProductionCost, AccountName: "生产成本", Debit: moveRes.CostAmount},
+				{AccountCode: financeService.AccountRawMaterials, AccountName: "原材料", Credit: moveRes.CostAmount},
+			},
+		}); err != nil {
 			return err
 		}
 

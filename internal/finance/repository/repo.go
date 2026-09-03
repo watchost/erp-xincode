@@ -3,6 +3,8 @@
 package repository
 
 import (
+	"time"
+
 	"gorm.io/gorm"
 	"erp-system/internal/finance/model"
 )
@@ -24,6 +26,10 @@ type AccountEntryRepository interface {
 	Create(tx *gorm.DB, entry *model.FinAccountEntry) error
 	List(accountCode, bizType, bizNo, startDate, endDate string, page, pageSize int) ([]model.FinAccountEntry, int64, error)
 	GetBalance(accountCode string, endDate string) (float64, error)
+	// SumBalance 返回 account_code LIKE prefix+'%' 的分录在 [start, end) 区间内
+	// 「借方合计 − 贷方合计」。借增科目（资产/成本/费用）结果为正，贷增科目
+	// （负债/权益/收入）结果为负。start/end 为 nil 表示该方向不限制时间。
+	SumBalance(prefix string, start, end *time.Time) (float64, error)
 }
 
 type BudgetRepository interface {
@@ -142,6 +148,21 @@ func (r *accountEntryRepo) GetBalance(accountCode string, endDate string) (float
 		Where("account_code = ?", accountCode).
 		Where("created_at <= ?", endDate).
 		Scan(&balance).Error
+	return balance, err
+}
+
+func (r *accountEntryRepo) SumBalance(prefix string, start, end *time.Time) (float64, error) {
+	var balance float64
+	q := r.db.Model(&model.FinAccountEntry{}).
+		Select("COALESCE(SUM(debit_amount), 0) - COALESCE(SUM(credit_amount), 0)").
+		Where("account_code LIKE ?", prefix+"%")
+	if start != nil {
+		q = q.Where("created_at >= ?", *start)
+	}
+	if end != nil {
+		q = q.Where("created_at < ?", *end)
+	}
+	err := q.Scan(&balance).Error
 	return balance, err
 }
 

@@ -103,7 +103,10 @@ type MoveInput struct {
 }
 
 // MoveResult 返回更新后的库存状态。
+// CostAmount 为本次移动结转的成本金额：入库=本次入库单价×数量，出库=移动加权平均单价×数量。
+// 供财务过账在同一事务内取数，避免重复计算与口径不一致。
 type MoveResult struct {
-	AfterQty float64
-	AvgCost  float64
+	AfterQty   float64
+	AvgCost    float64
+	CostAmount float64
 }

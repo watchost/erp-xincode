@@ -120,6 +120,17 @@ func main() {
 	numberGen := bizno.NewGenerator(rdb)
 	idempGuard := idemp.NewGuard(rdb, 24*time.Hour)
 
+	// 财务模块：采购入库/生产领料需在同事务内过账，故先于采购/生产构建，
+	// 作为 financeService.Poster 注入下游业务服务。
+	financeCostCardRepo := financeRepository.NewCostCardRepository(dbConn)
+	financeAccountEntryRepo := financeRepository.NewAccountEntryRepository(dbConn)
+	financeBudgetRepo := financeRepository.NewBudgetRepository(dbConn)
+	financeSvc := financeService.NewFinanceService(
+		txManager, financeCostCardRepo, financeAccountEntryRepo, financeBudgetRepo,
+		mdmMaterialRepo, numberGen,
+	)
+	financeH := financeHandler.NewFinanceHandler(financeSvc)
+
 	// 仓库模块
 	warehouseInvRepo := warehouseRepository.NewInventoryRepository(dbConn)
 	warehouseLedgerRepo := warehouseRepository.NewStockLedgerRepository(dbConn)
@@ -136,7 +147,7 @@ func main() {
 	purchaseSvc := purchaseService.NewPurchaseService(
 		txManager, purchaseOrderRepo, purchaseInboundRepo,
 		mdmSupplierRepo, mdmMaterialRepo, mdmWarehouseRepo, mdmLocationRepo,
-		warehouseSvc, numberGen, idempGuard,
+		warehouseSvc, financeSvc, numberGen, idempGuard,
 	)
 	purchaseH := purchaseHandler.NewPurchaseHandler(purchaseSvc)
 
@@ -146,16 +157,9 @@ func main() {
 	productionSvc := productionService.NewProductionService(
 		txManager, productionWorkOrderRepo, productionBomRepo,
 		mdmMaterialRepo, mdmWarehouseRepo, mdmLocationRepo,
-		warehouseSvc, numberGen, idempGuard,
+		warehouseSvc, financeSvc, numberGen, idempGuard,
 	)
 	productionH := productionHandler.NewProductionHandler(productionSvc)
-
-	// 财务模块
-	financeCostCardRepo := financeRepository.NewCostCardRepository(dbConn)
-	financeAccountEntryRepo := financeRepository.NewAccountEntryRepository(dbConn)
-	financeBudgetRepo := financeRepository.NewBudgetRepository(dbConn)
-	financeSvc := financeService.NewFinanceService(txManager, financeCostCardRepo, financeAccountEntryRepo, financeBudgetRepo, mdmMaterialRepo)
-	financeH := financeHandler.NewFinanceHandler(financeSvc)
 
 	// 仪表模块
 	dashboardSvc := dashboardService.NewDashboardService(txManager, dbConn)

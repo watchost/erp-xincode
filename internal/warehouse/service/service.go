@@ -236,7 +236,7 @@ func (s *WarehouseService) ApplyInboundTx(ctx context.Context, tx *gorm.DB, in d
 		return dto.MoveResult{}, err
 	}
 
-	return dto.MoveResult{AfterQty: inv.Qty, AvgCost: inv.AvgCost}, nil
+	return dto.MoveResult{AfterQty: inv.Qty, AvgCost: inv.AvgCost, CostAmount: costAmount}, nil
 }
 
 // ApplyOutboundTx 在调用方事务内执行出库并扣减库存。
@@ -262,6 +262,7 @@ func (s *WarehouseService) ApplyOutboundTx(ctx context.Context, tx *gorm.DB, in 
 		return dto.MoveResult{}, err
 	}
 
+	costAmount := oldAvg * in.Qty
 	if err := s.ledgerRepo.Append(tx, &warehouseModel.InvStockLedger{
 		MaterialID:  in.MaterialID,
 		WarehouseID: in.WarehouseID,
@@ -269,12 +270,12 @@ func (s *WarehouseService) ApplyOutboundTx(ctx context.Context, tx *gorm.DB, in 
 		BizNo:       in.BizNo,
 		ChangeQty:   -in.Qty,
 		AfterQty:    inv.Qty,
-		CostAmount:  oldAvg * in.Qty,
+		CostAmount:  costAmount,
 	}); err != nil {
 		return dto.MoveResult{}, err
 	}
 
-	return dto.MoveResult{AfterQty: inv.Qty, AvgCost: inv.AvgCost}, nil
+	return dto.MoveResult{AfterQty: inv.Qty, AvgCost: inv.AvgCost, CostAmount: costAmount}, nil
 }
 
 func (s *WarehouseService) ListInventory(ctx context.Context, req dto.InventoryQuery) ([]dto.InventoryVO, int64, error) {
