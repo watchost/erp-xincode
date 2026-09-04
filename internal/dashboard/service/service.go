@@ -1,27 +1,35 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package service
 
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
-	"gorm.io/gorm"
 	"erp-system/internal/dashboard/dto"
-	warehouseModel "erp-system/internal/warehouse/model"
-	purchaseModel "erp-system/internal/purchase/model"
-	productionModel "erp-system/internal/production/model"
+	"erp-system/internal/llm/gateway"
 	"erp-system/internal/pkg/db"
+	productionModel "erp-system/internal/production/model"
+	purchaseModel "erp-system/internal/purchase/model"
+	warehouseModel "erp-system/internal/warehouse/model"
+	"gorm.io/gorm"
 )
 
+// defaultAlertThreshold 物料未设置安全库存(min_stock)时的预警默认阈值。
+// 库存预警计数与明细列表共用该阈值，保证 KPI 数字与列表条数一致。
+const defaultAlertThreshold = 10
+
 type DashboardService struct {
-	txManager *db.TxManager
-	db        *gorm.DB
+	txManager  *db.TxManager
+	db         *gorm.DB
+	llmGateway gateway.LLMGateway
+	llmEnabled bool
 }
 
-func NewDashboardService(txManager *db.TxManager, db *gorm.DB) *DashboardService {
-	return &DashboardService{txManager: txManager, db: db}
+func NewDashboardService(txManager *db.TxManager, db *gorm.DB, llmGateway gateway.LLMGateway, llmEnabled bool) *DashboardService {
+	return &DashboardService{txManager: txManager, db: db, llmGateway: llmGateway, llmEnabled: llmEnabled}
 }
 
 func (s *DashboardService) GetOverview(ctx context.Context) (*dto.OverviewVO, error) {
@@ -48,28 +56,198 @@ func (s *DashboardService) GetOverview(ctx context.Context) (*dto.OverviewVO, er
 		Where("status = ? OR status = ?", 2, 3).
 		Count(&vo.InProgressWorkOrders)
 
-	_ = s.db.Model(&warehouseModel.InvInventory{}).
-		Where("available_qty < 10").
-		Count(&vo.StockAlertCount)
+	_ = s.alertBaseQuery().Count(&vo.StockAlertCount)
 
 	return &vo, nil
 }
 
-func (s *DashboardService) GetStockAlerts(ctx context.Context) ([]interface{}, error) {
-	var alerts []interface{}
+// alertBaseQuery 库存预警明细的公共查询：库存连物料/仓库，
+// 可用量低于「物料安全库存，未设置则默认阈值」。
+func (s *DashboardService) alertBaseQuery() *gorm.DB {
+	return s.db.Table("inv_inventory AS i").
+		Joins("LEFT JOIN mdm_material AS m ON m.id = i.material_id AND m.deleted_at IS NULL").
+		Joins("LEFT JOIN mdm_warehouse AS w ON w.id = i.warehouse_id AND w.deleted_at IS NULL").
+		Where("i.available_qty < COALESCE(NULLIF(m.min_stock, 0), ?)", defaultAlertThreshold)
+}
+
+func (s *DashboardService) GetStockAlerts(ctx context.Context) ([]dto.StockAlertVO, error) {
+	var rows []struct {
+		MaterialCode  string
+		MaterialName  string
+		WarehouseName string
+		Qty           float64
+		AvailableQty  float64
+		MinStock      *float64
+	}
+	err := s.alertBaseQuery().
+		Select("m.material_code AS material_code, m.name AS material_name, w.name AS warehouse_name, " +
+			"i.qty AS qty, i.available_qty AS available_qty, m.min_stock AS min_stock").
+		Order("i.available_qty ASC").
+		Limit(50).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+
+	alerts := make([]dto.StockAlertVO, 0, len(rows))
+	for _, r := range rows {
+		threshold := float64(defaultAlertThreshold)
+		if r.MinStock != nil && *r.MinStock > 0 {
+			threshold = *r.MinStock
+		}
+		level := "warning"
+		// 可用量不足阈值一半视为紧急
+		if r.AvailableQty < threshold/2 {
+			level = "danger"
+		}
+		alerts = append(alerts, dto.StockAlertVO{
+			MaterialCode:  r.MaterialCode,
+			MaterialName:  r.MaterialName,
+			WarehouseName: r.WarehouseName,
+			CurrentQty:    r.Qty,
+			AvailableQty:  r.AvailableQty,
+			MinStock:      float64(threshold),
+			Level:         level,
+		})
+	}
 	return alerts, nil
 }
 
-func (s *DashboardService) GetRecentOrders(ctx context.Context) ([]interface{}, error) {
-	var orders []interface{}
+func purchaseStatusDesc(status int) string {
+	switch status {
+	case 1:
+		return "草稿"
+	case 2:
+		return "已审批"
+	case 3:
+		return "已完成"
+	case 4:
+		return "已取消"
+	case 5:
+		return "部分收货"
+	default:
+		return "未知"
+	}
+}
+
+func (s *DashboardService) GetRecentOrders(ctx context.Context) ([]dto.RecentOrderVO, error) {
+	var rows []struct {
+		OrderNo      string
+		SupplierName string
+		TotalAmount  float64
+		Status       int
+		CreatedAt    time.Time
+	}
+	err := s.db.Table("pur_purchase_order AS o").
+		Joins("LEFT JOIN mdm_supplier AS sup ON sup.id = o.supplier_id AND sup.deleted_at IS NULL").
+		Select("o.order_no AS order_no, COALESCE(sup.name, '') AS supplier_name, "+
+			"o.total_amount AS total_amount, o.status AS status, o.created_at AS created_at").
+		Order("o.created_at DESC").
+		Limit(10).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+
+	orders := make([]dto.RecentOrderVO, 0, len(rows))
+	for _, r := range rows {
+		orders = append(orders, dto.RecentOrderVO{
+			OrderNo:      r.OrderNo,
+			SupplierName: r.SupplierName,
+			TotalAmount:  r.TotalAmount,
+			StatusDesc:   purchaseStatusDesc(r.Status),
+			CreatedAt:    r.CreatedAt.Format("2006-01-02 15:04"),
+		})
+	}
 	return orders, nil
 }
 
 func (s *DashboardService) GetLLMAnalysis(ctx context.Context, question string) (*dto.LLMAnalysisVO, error) {
-	answer := fmt.Sprintf("LLM分析服务暂未连接外部AI服务。您的问题是：%s", question)
+	// 以真实经营数据作为上下文，避免模型凭空回答
+	overview, _ := s.GetOverview(ctx)
+	alerts, _ := s.GetStockAlerts(ctx)
+	orders, _ := s.GetRecentOrders(ctx)
+
+	dataCtx := s.buildDataContext(overview, alerts, orders)
+	answer := s.fallbackAnswer(question, overview, alerts)
+
+	if s.llmEnabled && s.llmGateway != nil {
+		messages := []gateway.Message{
+			{Role: "system", Content: "你是 ERP 系统的智能分析助手，基于提供的真实经营数据给出简洁、专业的分析与建议，不要编造数据。"},
+			{Role: "user", Content: dataCtx + "\n用户问题：" + question},
+		}
+		if ai, err := s.llmGateway.Chat(ctx, messages); err == nil && strings.TrimSpace(ai) != "" {
+			answer = ai
+		}
+	}
+
 	return &dto.LLMAnalysisVO{
-		Question:    question,
-		Answer:      answer,
+		Question:     question,
+		Answer:       answer,
 		AnalysisType: "text",
 	}, nil
+}
+
+// buildDataContext 把仪表盘真实数据整理成给模型的事实清单。
+func (s *DashboardService) buildDataContext(ov *dto.OverviewVO, alerts []dto.StockAlertVO, orders []dto.RecentOrderVO) string {
+	var b strings.Builder
+	b.WriteString("【当前经营数据】\n")
+	b.WriteString(fmt.Sprintf("- 库存总量: %.0f，库存总值: ¥%.2f\n", ov.TotalInventory, ov.InventoryValue))
+	b.WriteString(fmt.Sprintf("- 今日入库: %.0f，今日出库: %.0f\n", ov.TodayInboundQty, ov.TodayOutboundQty))
+	b.WriteString(fmt.Sprintf("- 待审批采购订单: %d，进行中工单: %d，库存预警: %d\n",
+		ov.PendingPurchaseOrders, ov.InProgressWorkOrders, ov.StockAlertCount))
+
+	if len(alerts) > 0 {
+		b.WriteString("- 库存预警明细(物料/仓库/可用量): ")
+		for i, a := range alerts {
+			if i >= 5 {
+				b.WriteString("等")
+				break
+			}
+			if i > 0 {
+				b.WriteString("；")
+			}
+			b.WriteString(fmt.Sprintf("%s(%s) 可用%.0f", a.MaterialName, a.WarehouseName, a.AvailableQty))
+		}
+		b.WriteString("\n")
+	}
+
+	if len(orders) > 0 {
+		b.WriteString("- 最近采购订单: ")
+		for i, o := range orders {
+			if i >= 5 {
+				break
+			}
+			if i > 0 {
+				b.WriteString("；")
+			}
+			b.WriteString(fmt.Sprintf("%s %s ¥%.2f(%s)", o.OrderNo, o.SupplierName, o.TotalAmount, o.StatusDesc))
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// fallbackAnswer 未配置/调用 LLM 失败时，基于真实数据给出确定性摘要，不回显问题、不编造。
+func (s *DashboardService) fallbackAnswer(question string, ov *dto.OverviewVO, alerts []dto.StockAlertVO) string {
+	var b strings.Builder
+	b.WriteString("（未连接外部 AI，以下为系统基于实时数据的摘要）\n")
+	b.WriteString(fmt.Sprintf("当前库存总值约 ¥%.2f，库存总量 %.0f；今日入库 %.0f、出库 %.0f。",
+		ov.InventoryValue, ov.TotalInventory, ov.TodayInboundQty, ov.TodayOutboundQty))
+	b.WriteString(fmt.Sprintf("待审批采购订单 %d 张，进行中工单 %d 张。", ov.PendingPurchaseOrders, ov.InProgressWorkOrders))
+
+	if len(alerts) > 0 {
+		b.WriteString(fmt.Sprintf("\n需优先关注 %d 项低库存：", len(alerts)))
+		for i, a := range alerts {
+			if i >= 3 {
+				b.WriteString("等。")
+				break
+			}
+			b.WriteString(fmt.Sprintf("\n· %s（%s）可用 %.0f，低于安全库存 %.0f；", a.MaterialName, a.WarehouseName, a.AvailableQty, a.MinStock))
+		}
+		b.WriteString("\n建议尽快对上述物料下达采购或调整生产排程。")
+	} else {
+		b.WriteString("\n当前无库存预警，库存水位正常。")
+	}
+	return b.String()
 }

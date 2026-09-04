@@ -5,10 +5,10 @@ package handler
 import (
 	"net/http"
 
-	"github.com/gin-gonic/gin"
 	"erp-system/internal/openapi/dto"
 	"erp-system/internal/openapi/service"
 	"erp-system/internal/pkg/response"
+	"github.com/gin-gonic/gin"
 )
 
 type OpenAPIHandler struct {

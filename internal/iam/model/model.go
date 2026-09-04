@@ -50,14 +50,14 @@ type SysUserRole struct {
 }
 
 type SysAuditLog struct {
-	ID          int64           `json:"id"`
-	UserID      int64           `json:"user_id"`
-	Action      string          `json:"action"`
-	Module      string          `json:"module"`
-	IP          string          `json:"ip"`
-	ReqParam    JSON            `json:"req_param"`
-	ResSummary  string          `json:"res_summary"`
-	CreatedAt   time.Time       `json:"created_at"`
+	ID         int64     `json:"id"`
+	UserID     int64     `json:"user_id"`
+	Action     string    `json:"action"`
+	Module     string    `json:"module"`
+	IP         string    `json:"ip"`
+	ReqParam   JSON      `json:"req_param"`
+	ResSummary string    `json:"res_summary"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type JSON json.RawMessage
@@ -80,9 +80,9 @@ func (j *JSON) Scan(value interface{}) error {
 	return err
 }
 
-func (SysUser) TableName() string { return "sys_user" }
-func (SysRole) TableName() string { return "sys_role" }
-func (SysPermission) TableName() string { return "sys_permission" }
+func (SysUser) TableName() string           { return "sys_user" }
+func (SysRole) TableName() string           { return "sys_role" }
+func (SysPermission) TableName() string     { return "sys_permission" }
 func (SysRolePermission) TableName() string { return "sys_role_permission" }
-func (SysUserRole) TableName() string { return "sys_user_role" }
-func (SysAuditLog) TableName() string { return "sys_audit_log" }
+func (SysUserRole) TableName() string       { return "sys_user_role" }
+func (SysAuditLog) TableName() string       { return "sys_audit_log" }

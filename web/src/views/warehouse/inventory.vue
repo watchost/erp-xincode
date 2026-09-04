@@ -82,11 +82,7 @@ async function loadWarehouses() {
       warehouseList.value = res.data || []
     }
   } catch (e) {
-    warehouseList.value = [
-      { id: 1, name: '主仓库' },
-      { id: 2, name: '良品仓' },
-      { id: 3, name: '不良品仓' }
-    ]
+    warehouseList.value = []
   }
 }
 
@@ -103,13 +99,8 @@ async function loadData() {
       total.value = res.data?.total || 0
     }
   } catch (e) {
-    tableData.value = [
-      { id: 1, material_code: 'M001', material_name: '原材料A', warehouse_name: '主仓库', location_code: 'A-01-01', qty: 500, available_qty: 480, avg_cost: 12.5, updated_at: '2026-07-15 10:30:00' },
-      { id: 2, material_code: 'M002', material_name: '原材料B', warehouse_name: '主仓库', location_code: 'A-01-02', qty: 300, available_qty: 300, avg_cost: 25.0, updated_at: '2026-07-15 09:20:00' },
-      { id: 3, material_code: 'M003', material_name: '半成品C', warehouse_name: '良品仓', location_code: 'GP-01-01', qty: 200, available_qty: 180, avg_cost: 45.5, updated_at: '2026-07-14 16:45:00' },
-      { id: 4, material_code: 'M004', material_name: '成品D', warehouse_name: '主仓库', location_code: 'B-01-01', qty: 150, available_qty: 150, avg_cost: 120.0, updated_at: '2026-07-14 14:30:00' }
-    ]
-    total.value = 50
+    tableData.value = []
+    total.value = 0
   } finally {
     loading.value = false
   }

@@ -5,23 +5,23 @@ package routes
 import (
 	"github.com/gin-gonic/gin"
 
-	iamHandler "erp-system/internal/iam/handler"
-	mdmHandler "erp-system/internal/mdm/handler"
-	warehouseHandler "erp-system/internal/warehouse/handler"
-	purchaseHandler "erp-system/internal/purchase/handler"
-	productionHandler "erp-system/internal/production/handler"
-	financeHandler "erp-system/internal/finance/handler"
 	dashboardHandler "erp-system/internal/dashboard/handler"
 	deviceHandler "erp-system/internal/device/handler"
+	financeHandler "erp-system/internal/finance/handler"
+	iamHandler "erp-system/internal/iam/handler"
 	llmHandler "erp-system/internal/llm/handler"
+	mdmHandler "erp-system/internal/mdm/handler"
 	openapiHandler "erp-system/internal/openapi/handler"
 	"erp-system/internal/pkg/middleware"
+	productionHandler "erp-system/internal/production/handler"
+	purchaseHandler "erp-system/internal/purchase/handler"
+	warehouseHandler "erp-system/internal/warehouse/handler"
 )
 
 // Permission codes used for route guards. Keep in sync with sys_permission seed.
 const (
-	PermDashboardView    = "dashboard:view"
-	PermDashboardLLM     = "dashboard:llm"
+	PermDashboardView = "dashboard:view"
+	PermDashboardLLM  = "dashboard:llm"
 
 	PermWarehouseInbound   = "warehouse:inbound"
 	PermWarehouseOutbound  = "warehouse:outbound"
@@ -30,11 +30,13 @@ const (
 	PermPurchaseOrderView    = "purchase:order:view"
 	PermPurchaseOrderCreate  = "purchase:order:create"
 	PermPurchaseOrderApprove = "purchase:order:approve"
+	PermPurchaseOrderCancel  = "purchase:order:cancel"
 	PermPurchaseInbound      = "purchase:inbound"
 
 	PermProductionWOView   = "production:wo:view"
 	PermProductionWOCreate = "production:wo:create"
 	PermProductionOutbound = "production:outbound"
+	PermProductionReceipt  = "production:receipt"
 
 	PermFinanceCost    = "finance:cost"
 	PermFinanceReports = "finance:reports"
@@ -55,18 +57,19 @@ const (
 
 // Deps bundles all HTTP handlers and infrastructure config needed for routing.
 type Deps struct {
-	JWTSecret     string
-	LoginLimit    gin.HandlerFunc // 可选：登录限流中间件，为 nil 时不限流
-	IAM           *iamHandler.IAMHandler
-	MDM         *mdmHandler.MDMHandler
-	Warehouse   *warehouseHandler.WarehouseHandler
-	Purchase    *purchaseHandler.PurchaseHandler
-	Production  *productionHandler.ProductionHandler
-	Finance     *financeHandler.FinanceHandler
-	Dashboard   *dashboardHandler.DashboardHandler
-	Device      *deviceHandler.DeviceHandler
-	LLM         *llmHandler.LLMHandler
-	OpenAPI     *openapiHandler.OpenAPIHandler
+	JWTSecret    string
+	JWTBlacklist middleware.BlacklistChecker // 可选：登出 jti 黑名单校验，为 nil 时不校验
+	LoginLimit   gin.HandlerFunc             // 可选：登录限流中间件，为 nil 时不限流
+	IAM          *iamHandler.IAMHandler
+	MDM          *mdmHandler.MDMHandler
+	Warehouse    *warehouseHandler.WarehouseHandler
+	Purchase     *purchaseHandler.PurchaseHandler
+	Production   *productionHandler.ProductionHandler
+	Finance      *financeHandler.FinanceHandler
+	Dashboard    *dashboardHandler.DashboardHandler
+	Device       *deviceHandler.DeviceHandler
+	LLM          *llmHandler.LLMHandler
+	OpenAPI      *openapiHandler.OpenAPIHandler
 }
 
 // RegisterRoutes wires all HTTP endpoints.
@@ -88,7 +91,7 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 	r.POST("/api/v1/oauth/refresh", d.OpenAPI.RefreshToken)
 
 	api := r.Group("/api/v1")
-	api.Use(middleware.JWTAuth(d.JWTSecret))
+	api.Use(middleware.JWTAuth(d.JWTSecret, d.JWTBlacklist))
 	{
 		// 当前用户信息 / 登出 / 改密：只要登录即可
 		api.GET("/users/profile", d.IAM.GetUserInfo)
@@ -111,17 +114,25 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 			mdm.GET("/materials", middleware.RequirePermission(PermMDMMaterial), d.MDM.ListMaterials)
 			mdm.GET("/materials/:id", middleware.RequirePermission(PermMDMMaterial), d.MDM.GetMaterial)
 			mdm.PUT("/materials/:id", middleware.RequirePermission(PermMDMMaterial), d.MDM.UpdateMaterial)
+			mdm.DELETE("/materials/:id", middleware.RequirePermission(PermMDMMaterial), d.MDM.DeleteMaterial)
 
 			mdm.POST("/suppliers", middleware.RequirePermission(PermMDMSupplier), d.MDM.CreateSupplier)
 			mdm.GET("/suppliers", middleware.RequirePermission(PermMDMSupplier), d.MDM.ListSuppliers)
 			mdm.GET("/suppliers/:id", middleware.RequirePermission(PermMDMSupplier), d.MDM.GetSupplier)
 			mdm.PUT("/suppliers/:id", middleware.RequirePermission(PermMDMSupplier), d.MDM.UpdateSupplier)
+			mdm.DELETE("/suppliers/:id", middleware.RequirePermission(PermMDMSupplier), d.MDM.DeleteSupplier)
 
 			mdm.POST("/warehouses", middleware.RequirePermission(PermMDMWarehouse), d.MDM.CreateWarehouse)
 			mdm.GET("/warehouses", middleware.RequirePermission(PermMDMWarehouse), d.MDM.ListWarehouses)
+			mdm.GET("/warehouses/:id", middleware.RequirePermission(PermMDMWarehouse), d.MDM.GetWarehouse)
+			mdm.PUT("/warehouses/:id", middleware.RequirePermission(PermMDMWarehouse), d.MDM.UpdateWarehouse)
+			mdm.DELETE("/warehouses/:id", middleware.RequirePermission(PermMDMWarehouse), d.MDM.DeleteWarehouse)
 
 			mdm.POST("/locations", middleware.RequirePermission(PermMDMLocation), d.MDM.CreateLocation)
 			mdm.GET("/locations", middleware.RequirePermission(PermMDMLocation), d.MDM.ListLocations)
+			mdm.GET("/locations/:id", middleware.RequirePermission(PermMDMLocation), d.MDM.GetLocation)
+			mdm.PUT("/locations/:id", middleware.RequirePermission(PermMDMLocation), d.MDM.UpdateLocation)
+			mdm.DELETE("/locations/:id", middleware.RequirePermission(PermMDMLocation), d.MDM.DeleteLocation)
 		}
 
 		warehouse := api.Group("/warehouse")
@@ -137,6 +148,7 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 			purchase.GET("/orders", middleware.RequirePermission(PermPurchaseOrderView), d.Purchase.ListOrders)
 			purchase.POST("/orders", middleware.RequirePermission(PermPurchaseOrderCreate), d.Purchase.CreateOrder)
 			purchase.POST("/orders/:order_no/approve", middleware.RequirePermission(PermPurchaseOrderApprove), d.Purchase.ApproveOrder)
+			purchase.POST("/orders/:order_no/cancel", middleware.RequirePermission(PermPurchaseOrderCancel), d.Purchase.CancelOrder)
 			purchase.POST("/inbound/scan", middleware.RequirePermission(PermPurchaseInbound), d.Purchase.InboundScan)
 		}
 
@@ -146,6 +158,7 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 			production.POST("/work-orders", middleware.RequirePermission(PermProductionWOCreate), d.Production.CreateWorkOrder)
 			production.POST("/work-orders/:work_order_no/release", middleware.RequirePermission(PermProductionWOCreate), d.Production.ReleaseWorkOrder)
 			production.POST("/material-issue/scan", middleware.RequirePermission(PermProductionOutbound), d.Production.MaterialIssueScan)
+			production.POST("/receipt", middleware.RequirePermission(PermProductionReceipt), d.Production.ProductionReceipt)
 			production.POST("/bom", middleware.RequirePermission(PermProductionWOCreate), d.Production.CreateBom)
 		}
 

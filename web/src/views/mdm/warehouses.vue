@@ -40,11 +40,7 @@ async function loadData() {
       }))
     }
   } catch (e) {
-    tableData.value = [
-      { id: 1, code: 'WH001', name: '主仓库', type: 1, type_name: '普通仓', created_at: '2026-01-01 00:00:00' },
-      { id: 2, code: 'WH002', name: '良品仓', type: 2, type_name: '良品仓', created_at: '2026-01-01 00:00:00' },
-      { id: 3, code: 'WH003', name: '不良品仓', type: 3, type_name: '不良品仓', created_at: '2026-01-01 00:00:00' }
-    ]
+    tableData.value = []
   } finally {
     loading.value = false
   }

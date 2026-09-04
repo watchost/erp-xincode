@@ -1,4 +1,4 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package gateway
 
@@ -17,9 +17,9 @@ import (
 type LLMProvider string
 
 const (
-	ProviderQwen    LLMProvider = "qwen"
-	ProviderWenXin  LLMProvider = "wenxin"
-	ProviderZhipu   LLMProvider = "zhipu"
+	ProviderQwen   LLMProvider = "qwen"
+	ProviderWenXin LLMProvider = "wenxin"
+	ProviderZhipu  LLMProvider = "zhipu"
 )
 
 type LLMGateway interface {

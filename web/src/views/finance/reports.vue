@@ -72,21 +72,22 @@
         <span>会计分录</span>
       </template>
       <el-table :data="entries" style="width: 100%">
-        <el-table-column prop="voucher_no" label="凭证号" width="180" />
-        <el-table-column prop="biz_type_name" label="业务类型" width="120" />
-        <el-table-column prop="biz_no" label="业务单号" width="180" />
-        <el-table-column prop="debit" label="借方" width="120">
+        <el-table-column prop="entry_no" label="分录号" width="180" />
+        <el-table-column prop="account_code" label="科目编码" width="120" />
+        <el-table-column prop="account_name" label="科目名称" />
+        <el-table-column prop="description" label="摘要" />
+        <el-table-column prop="biz_no" label="业务单号" width="170" />
+        <el-table-column prop="debit_amount" label="借方" width="120">
           <template #default="{ row }">
-            ¥{{ row.debit }}
+            ¥{{ row.debit_amount }}
           </template>
         </el-table-column>
-        <el-table-column prop="credit" label="贷方" width="120">
+        <el-table-column prop="credit_amount" label="贷方" width="120">
           <template #default="{ row }">
-            ¥{{ row.credit }}
+            ¥{{ row.credit_amount }}
           </template>
         </el-table-column>
-        <el-table-column prop="period" label="期间" width="100" />
-        <el-table-column prop="created_at" label="创建时间" width="180" />
+        <el-table-column prop="created_at" label="创建时间" width="170" />
       </el-table>
     </el-card>
   </div>
@@ -106,30 +107,41 @@ const entries = ref([])
 let reportChart = null
 let expensePie = null
 
+// 月份范围选择器给出 [起始月, 结束月]；后端 financial-report 接收单个 period(YYYY-MM)，
+// 这里取起始月作为报表期间；未选择时不传，后端默认当前月。
+function buildReportParams() {
+  const range = dateRange.value
+  if (Array.isArray(range) && range.length === 2 && range[0]) {
+    const d = new Date(range[0])
+    const period = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    return { period }
+  }
+  return {}
+}
+
 async function loadData() {
   try {
     const [reportRes, entriesRes] = await Promise.all([
-      getFinancialReport({}),
+      getFinancialReport(buildReportParams()),
       listAccountEntries({ page: 1, page_size: 20 })
     ])
     if (reportRes.code === 0) {
-      reportData.value = reportRes.data || {}
+      // 映射后端 FinancialReportVO 真实字段到卡片展示字段
+      const d = reportRes.data || {}
+      reportData.value = {
+        total_income: d.total_revenue || 0,
+        total_expense: d.total_cost || 0,
+        net_profit: d.gross_profit || 0,
+        profit_rate: d.gross_margin || 0
+      }
     }
     if (entriesRes.code === 0) {
       entries.value = entriesRes.data?.list || []
     }
   } catch (e) {
-    reportData.value = {
-      total_income: 2580000,
-      total_expense: 1850000,
-      net_profit: 730000,
-      profit_rate: 28.3
-    }
-    entries.value = [
-      { voucher_no: 'V202607001', biz_type_name: '采购入库', biz_no: 'PO20260701001', debit: 50000, credit: 50000, period: '2026-07', created_at: '2026-07-15 10:30:00' },
-      { voucher_no: 'V202607002', biz_type_name: '销售收入', biz_no: 'SO20260701001', debit: 120000, credit: 120000, period: '2026-07', created_at: '2026-07-15 14:20:00' },
-      { voucher_no: 'V202607003', biz_type_name: '生产领料', biz_no: 'WO20260701001', debit: 35000, credit: 35000, period: '2026-07', created_at: '2026-07-14 09:15:00' }
-    ]
+    // 失败时响应拦截器已弹出错误提示；置空，不使用假数据
+    reportData.value = {}
+    entries.value = []
   }
   nextTick(() => {
     initCharts()
@@ -144,13 +156,14 @@ function initCharts() {
       legend: { data: ['收入', '支出', '利润'] },
       xAxis: {
         type: 'category',
-        data: ['1月', '2月', '3月', '4月', '5月', '6月', '7月']
+        data: []
       },
       yAxis: { type: 'value' },
       series: [
-        { name: '收入', type: 'bar', data: [180, 210, 195, 220, 240, 260, 258], itemStyle: { color: '#67C23A' } },
-        { name: '支出', type: 'bar', data: [130, 150, 145, 160, 175, 185, 185], itemStyle: { color: '#F56C6C' } },
-        { name: '利润', type: 'line', smooth: true, data: [50, 60, 50, 60, 65, 75, 73], itemStyle: { color: '#409EFF' } }
+        // 后端仅返回单期汇总，暂无月度趋势序列，data 置空，不编造数字
+        { name: '收入', type: 'bar', data: [], itemStyle: { color: '#67C23A' } },
+        { name: '支出', type: 'bar', data: [], itemStyle: { color: '#F56C6C' } },
+        { name: '利润', type: 'line', smooth: true, data: [], itemStyle: { color: '#409EFF' } }
       ]
     })
   }
@@ -163,13 +176,8 @@ function initCharts() {
         {
           type: 'pie',
           radius: ['40%', '70%'],
-          data: [
-            { value: 680, name: '材料成本' },
-            { value: 320, name: '人工成本' },
-            { value: 150, name: '制造费用' },
-            { value: 280, name: '运营费用' },
-            { value: 420, name: '其他支出' }
-          ]
+          // 后端未返回支出分类构成序列，置空，不编造数字
+          data: []
         }
       ]
     })

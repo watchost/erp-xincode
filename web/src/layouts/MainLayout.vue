@@ -13,76 +13,14 @@
         text-color="#fff"
         active-text-color="#409EFF"
       >
-        <el-sub-menu index="dashboard">
+        <el-sub-menu v-for="group in visibleMenus" :key="group.index" :index="group.index">
           <template #title>
-            <el-icon><Odometer /></el-icon>
-            <span>仪表页面</span>
+            <el-icon><component :is="group.icon" /></el-icon>
+            <span>{{ group.title }}</span>
           </template>
-          <el-menu-item index="/dashboard">数据概览</el-menu-item>
-        </el-sub-menu>
-
-        <el-sub-menu index="warehouse">
-          <template #title>
-            <el-icon><Box /></el-icon>
-            <span>仓库作业</span>
-          </template>
-          <el-menu-item index="/warehouse/inbound">入库作业</el-menu-item>
-          <el-menu-item index="/warehouse/outbound">出库作业</el-menu-item>
-          <el-menu-item index="/warehouse/inventory">库存管理</el-menu-item>
-        </el-sub-menu>
-
-        <el-sub-menu index="purchase">
-          <template #title>
-            <el-icon><ShoppingCart /></el-icon>
-            <span>采购管理</span>
-          </template>
-          <el-menu-item index="/purchase/orders">采购订单</el-menu-item>
-          <el-menu-item index="/purchase/inbound">采购入库</el-menu-item>
-        </el-sub-menu>
-
-        <el-sub-menu index="production">
-          <template #title>
-            <el-icon><Setting /></el-icon>
-            <span>生产管理</span>
-          </template>
-          <el-menu-item index="/production/work-orders">生产工单</el-menu-item>
-          <el-menu-item index="/production/outbound">生产领料</el-menu-item>
-        </el-sub-menu>
-
-        <el-sub-menu index="finance">
-          <template #title>
-            <el-icon><Money /></el-icon>
-            <span>财务管理</span>
-          </template>
-          <el-menu-item index="/finance/cost">成本核算</el-menu-item>
-          <el-menu-item index="/finance/reports">收支报表</el-menu-item>
-        </el-sub-menu>
-
-        <el-sub-menu index="mdm">
-          <template #title>
-            <el-icon><Briefcase /></el-icon>
-            <span>主数据</span>
-          </template>
-          <el-menu-item index="/mdm/materials">物料管理</el-menu-item>
-          <el-menu-item index="/mdm/suppliers">供应商管理</el-menu-item>
-          <el-menu-item index="/mdm/warehouses">仓库管理</el-menu-item>
-        </el-sub-menu>
-
-        <el-sub-menu index="device">
-          <template #title>
-            <el-icon><Monitor /></el-icon>
-            <span>设备管理</span>
-          </template>
-          <el-menu-item index="/device/list">设备列表</el-menu-item>
-        </el-sub-menu>
-
-        <el-sub-menu index="iam">
-          <template #title>
-            <el-icon><User /></el-icon>
-            <span>系统管理</span>
-          </template>
-          <el-menu-item index="/iam/users">用户管理</el-menu-item>
-          <el-menu-item index="/iam/roles">角色管理</el-menu-item>
+          <el-menu-item v-for="item in group.items" :key="item.index" :index="item.index">
+            {{ item.label }}
+          </el-menu-item>
         </el-sub-menu>
       </el-menu>
     </el-aside>
@@ -120,6 +58,7 @@ import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/store/user'
 import { ElMessageBox } from 'element-plus'
+import { hasPerm } from '@/utils/permission'
 
 const route = useRoute()
 const router = useRouter()
@@ -128,7 +67,71 @@ const userStore = useUserStore()
 const activeMenu = computed(() => route.path)
 const userInfo = computed(() => userStore.userInfo || {})
 
-// 刷新页面后用户信息可能缺失（或本地缓存损坏），有 token 时补拉一次
+// 菜单定义：perm 为进入该菜单所需权限码（与后端 sys_permission 种子一致）。
+const menus = [
+  {
+    index: 'dashboard', icon: 'Odometer', title: '仪表页面',
+    items: [{ index: '/dashboard', label: '数据概览', perm: 'dashboard:view' }]
+  },
+  {
+    index: 'warehouse', icon: 'Box', title: '仓库作业',
+    items: [
+      { index: '/warehouse/inbound', label: '入库作业', perm: 'warehouse:inbound' },
+      { index: '/warehouse/outbound', label: '出库作业', perm: 'warehouse:outbound' },
+      { index: '/warehouse/inventory', label: '库存管理', perm: 'warehouse:inventory' }
+    ]
+  },
+  {
+    index: 'purchase', icon: 'ShoppingCart', title: '采购管理',
+    items: [
+      { index: '/purchase/orders', label: '采购订单', perm: 'purchase:order:view' },
+      { index: '/purchase/inbound', label: '采购入库', perm: 'purchase:inbound' }
+    ]
+  },
+  {
+    index: 'production', icon: 'Setting', title: '生产管理',
+    items: [
+      { index: '/production/work-orders', label: '生产工单', perm: 'production:wo:view' },
+      { index: '/production/outbound', label: '生产领料', perm: 'production:outbound' }
+    ]
+  },
+  {
+    index: 'finance', icon: 'Money', title: '财务管理',
+    items: [
+      { index: '/finance/cost', label: '成本核算', perm: 'finance:cost' },
+      { index: '/finance/reports', label: '收支报表', perm: 'finance:reports' }
+    ]
+  },
+  {
+    index: 'mdm', icon: 'Briefcase', title: '主数据',
+    items: [
+      { index: '/mdm/materials', label: '物料管理', perm: 'mdm:material' },
+      { index: '/mdm/suppliers', label: '供应商管理', perm: 'mdm:supplier' },
+      { index: '/mdm/warehouses', label: '仓库管理', perm: 'mdm:warehouse' }
+    ]
+  },
+  {
+    index: 'device', icon: 'Monitor', title: '设备管理',
+    items: [{ index: '/device/list', label: '设备列表', perm: 'device:manage' }]
+  },
+  {
+    index: 'iam', icon: 'User', title: '系统管理',
+    items: [
+      { index: '/iam/users', label: '用户管理', perm: 'iam:user' },
+      { index: '/iam/roles', label: '角色管理', perm: 'iam:role' }
+    ]
+  }
+]
+
+// 按当前用户权限过滤菜单：无权限的菜单项隐藏，整个分组无可见项时隐藏分组。
+const visibleMenus = computed(() =>
+  menus
+    .map((g) => ({ ...g, items: g.items.filter((i) => hasPerm(userStore.permissions, i.perm)) }))
+    .filter((g) => g.items.length > 0)
+)
+
+// 刷新页面后用户信息可能缺失（或本地缓存损坏），有 token 时补拉一次。
+// 权限码由路由守卫在进入页面前拉取，这里兜底补拉用户信息。
 onMounted(() => {
   if (userStore.token && !userStore.userInfo?.real_name) {
     userStore.fetchUserInfo()

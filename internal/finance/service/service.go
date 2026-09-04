@@ -7,23 +7,23 @@ import (
 	"fmt"
 	"time"
 
-	"gorm.io/gorm"
-	mdmRepo "erp-system/internal/mdm/repository"
 	"erp-system/internal/finance/dto"
 	"erp-system/internal/finance/model"
 	"erp-system/internal/finance/repository"
+	mdmRepo "erp-system/internal/mdm/repository"
 	"erp-system/internal/pkg/bizno"
 	"erp-system/internal/pkg/db"
 	"erp-system/internal/pkg/errors"
+	"gorm.io/gorm"
 )
 
 type FinanceService struct {
-	txManager           *db.TxManager
-	costCardRepo        repository.CostCardRepository
-	accountEntryRepo    repository.AccountEntryRepository
-	budgetRepo          repository.BudgetRepository
-	materialRepo        mdmRepo.MaterialRepository
-	numbers             *bizno.Generator
+	txManager        *db.TxManager
+	costCardRepo     repository.CostCardRepository
+	accountEntryRepo repository.AccountEntryRepository
+	budgetRepo       repository.BudgetRepository
+	materialRepo     mdmRepo.MaterialRepository
+	numbers          *bizno.Generator
 }
 
 func NewFinanceService(
@@ -337,4 +337,16 @@ func (s *FinanceService) ReserveBudgetTx(ctx context.Context, tx *gorm.DB, budge
 		return errors.New(60010, 409, "本期预算余额不足，单据已被拒绝")
 	}
 	return nil
+}
+
+// ReleaseBudgetTx 在调用方事务内释放本期（当前年月）指定类型预算已占用的金额。
+// 用于采购订单取消时回退审批时占用的预算。本期未设置预算时为空操作；
+// GREATEST 兜底保证占用不会被释放为负。失败随调用方事务一并回滚。
+func (s *FinanceService) ReleaseBudgetTx(ctx context.Context, tx *gorm.DB, budgetType string, amount float64) error {
+	if amount <= 0 {
+		return nil
+	}
+	now := time.Now()
+	_, err := s.budgetRepo.ReleaseAtomic(tx, budgetType, now.Year(), int(now.Month()), amount)
+	return err
 }

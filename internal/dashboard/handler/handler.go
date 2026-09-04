@@ -1,13 +1,13 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package handler
 
 import (
 	"net/http"
 
-	"github.com/gin-gonic/gin"
 	"erp-system/internal/dashboard/service"
 	"erp-system/internal/pkg/response"
+	"github.com/gin-gonic/gin"
 )
 
 type DashboardHandler struct {

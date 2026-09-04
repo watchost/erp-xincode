@@ -122,12 +122,9 @@ async function loadData() {
       total.value = res.data?.total || 0
     }
   } catch (e) {
-    tableData.value = [
-      { id: 1, username: 'admin', real_name: '系统管理员', phone: '13800138000', status: 1, created_at: '2026-01-01 00:00:00' },
-      { id: 2, username: 'manager', real_name: '张经理', phone: '13800138001', status: 1, created_at: '2026-01-15 10:00:00' },
-      { id: 3, username: 'warehouse01', real_name: '李仓库', phone: '13800138002', status: 1, created_at: '2026-02-01 10:00:00' }
-    ]
-    total.value = 10
+    // 失败时响应拦截器已弹出错误提示，这里清空列表，不使用假数据
+    tableData.value = []
+    total.value = 0
   } finally {
     loading.value = false
   }
@@ -149,9 +146,7 @@ async function handleCreate() {
       loadData()
     }
   } catch (e) {
-    ElMessage.success('创建成功（模拟）')
-    showCreateDialog.value = false
-    loadData()
+    // 失败时响应拦截器已弹出错误提示；不关闭对话框、不刷新，保留用户输入
   }
 }
 

@@ -1,4 +1,4 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package model
 
@@ -19,25 +19,25 @@ type DevDevice struct {
 }
 
 type DevDeviceLog struct {
-	ID          int64     `json:"id"`
-	DeviceID    int64     `json:"device_id"`
-	EventType   string    `json:"event_type"`
-	Content     []byte    `json:"content"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID        int64     `json:"id"`
+	DeviceID  int64     `json:"device_id"`
+	EventType string    `json:"event_type"`
+	Content   []byte    `json:"content"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 const (
-	DeviceTypeScanner   = 1
-	DeviceTypeRFID      = 2
-	DeviceTypePDA       = 3
-	DeviceTypeWeigh     = 4
+	DeviceTypeScanner = 1
+	DeviceTypeRFID    = 2
+	DeviceTypePDA     = 3
+	DeviceTypeWeigh   = 4
 )
 
 const (
-	DeviceStatusOffline    = 0
-	DeviceStatusOnline     = 1
-	DeviceStatusMaintain   = 2
+	DeviceStatusOffline  = 0
+	DeviceStatusOnline   = 1
+	DeviceStatusMaintain = 2
 )
 
-func (DevDevice) TableName() string { return "dev_device" }
+func (DevDevice) TableName() string    { return "dev_device" }
 func (DevDeviceLog) TableName() string { return "dev_device_log" }

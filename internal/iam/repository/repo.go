@@ -3,8 +3,8 @@
 package repository
 
 import (
-	"gorm.io/gorm"
 	"erp-system/internal/iam/model"
+	"gorm.io/gorm"
 )
 
 // UserRepository 负责 sys_user 的读写。

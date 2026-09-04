@@ -79,6 +79,26 @@ func (h *ProductionHandler) MaterialIssueScan(c *gin.Context) {
 	response.Success(c, res)
 }
 
+func (h *ProductionHandler) ProductionReceipt(c *gin.Context) {
+	var req dto.ProductionReceiptReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+	req.IdempotencyKey = c.GetHeader("Idempotency-Key")
+	if req.IdempotencyKey == "" {
+		response.BadRequest(c, "缺少 Idempotency-Key 请求头")
+		return
+	}
+
+	res, err := h.productionService.ProductionReceipt(c.Request.Context(), req)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.Success(c, res)
+}
+
 func (h *ProductionHandler) CreateBom(c *gin.Context) {
 	var req dto.CreateBomReq
 	if err := c.ShouldBindJSON(&req); err != nil {

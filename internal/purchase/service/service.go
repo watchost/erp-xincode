@@ -25,17 +25,19 @@ import (
 )
 
 const (
-	OrderStatusDraft     = 1
-	OrderStatusApproved  = 2
-	OrderStatusCompleted = 3
-	OrderStatusCanceled  = 4
+	OrderStatusDraft             = 1
+	OrderStatusApproved          = 2
+	OrderStatusCompleted         = 3
+	OrderStatusCanceled          = 4
+	OrderStatusPartiallyReceived = 5
 )
 
-// financeGateway 聚合采购流程需要的财务同事务能力：凭证过账 + 预算占用。
+// financeGateway 聚合采购流程需要的财务同事务能力：凭证过账 + 预算占用/释放。
 // 由 *financeService.FinanceService 满足。
 type financeGateway interface {
 	financeService.Poster
 	ReserveBudgetTx(ctx context.Context, tx *gorm.DB, budgetType string, amount float64) error
+	ReleaseBudgetTx(ctx context.Context, tx *gorm.DB, budgetType string, amount float64) error
 }
 
 type PurchaseService struct {
@@ -168,7 +170,44 @@ func (s *PurchaseService) ApproveOrder(ctx context.Context, orderNo string) erro
 
 		return s.orderRepo.UpdateOrderStatus(tx, order.ID, OrderStatusApproved, map[string]interface{}{
 			"approved_at": time.Now(),
+			"approved_by": auth.UserIDFromContext(ctx),
 		})
+	})
+}
+
+// CancelOrder 取消采购订单。
+//   - 草稿(1)：尚未审批、未占用预算，直接取消；
+//   - 已审批(2)/部分收货(5)：仅在零收货时允许取消，并在同事务内释放审批时占用的
+//     采购预算（GREATEST 兜底，不会释放为负）；已有入库记录则拒绝（库存/应付已生成）；
+//   - 已完成(3)/已取消(4)：不允许取消。
+func (s *PurchaseService) CancelOrder(ctx context.Context, orderNo string) error {
+	return s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
+		order, err := s.orderRepo.FindByOrderNoForUpdate(tx, orderNo)
+		if err != nil {
+			return errors.New(40001, 404, "采购订单不存在")
+		}
+
+		switch order.Status {
+		case OrderStatusDraft:
+			return s.orderRepo.UpdateOrderStatus(tx, order.ID, OrderStatusCanceled, nil)
+		case OrderStatusApproved, OrderStatusPartiallyReceived:
+			items, err := s.orderRepo.FindItems(order.ID)
+			if err != nil {
+				return err
+			}
+			for _, it := range items {
+				if it.ReceivedQty > 0 {
+					return errors.New(40007, 409, "订单已有入库记录，不能取消")
+				}
+			}
+			// 零收货：回退审批时占用的预算，随取消事务一并提交/回滚。
+			if err := s.finance.ReleaseBudgetTx(ctx, tx, financeService.BudgetTypePurchase, order.TotalAmount); err != nil {
+				return err
+			}
+			return s.orderRepo.UpdateOrderStatus(tx, order.ID, OrderStatusCanceled, nil)
+		default:
+			return errors.New(40004, 409, "当前订单状态不允许取消")
+		}
 	})
 }
 
@@ -220,6 +259,8 @@ func (s *PurchaseService) buildOrderVO(order *model.PurPurchaseOrder, items []mo
 		statusDesc = "已完成"
 	case OrderStatusCanceled:
 		statusDesc = "已取消"
+	case OrderStatusPartiallyReceived:
+		statusDesc = "部分收货"
 	}
 	return &dto.PurchaseOrderVO{
 		ID:           order.ID,
@@ -269,8 +310,8 @@ func (s *PurchaseService) InboundScan(ctx context.Context, req dto.PurchaseInbou
 		if err != nil {
 			return errors.New(40001, 404, "采购订单不存在")
 		}
-		if order.Status != OrderStatusApproved {
-			return errors.New(40004, 409, "订单未审批，无法入库")
+		if order.Status != OrderStatusApproved && order.Status != OrderStatusPartiallyReceived {
+			return errors.New(40004, 409, "订单未审批或已结束，无法入库")
 		}
 
 		items, err := s.orderRepo.FindItems(order.ID)
@@ -352,25 +393,24 @@ func (s *PurchaseService) InboundScan(ctx context.Context, req dto.PurchaseInbou
 			return err
 		}
 
-		// 全量收齐则置为已完成
-		if locked.ReceivedQty+req.Qty >= locked.Qty {
-			allDone := true
-			for _, it := range items {
-				if it.ID == locked.ID {
-					if locked.ReceivedQty+req.Qty < it.Qty {
-						allDone = false
-					}
-				} else if it.ReceivedQty < it.Qty {
-					allDone = false
-				}
+		// 全部明细收齐则置为已完成(3)，否则置为部分收货(5)。锁定行本次后的收货数
+		// = locked.ReceivedQty+req.Qty，其余明细沿用 items 快照。
+		allDone := true
+		for _, it := range items {
+			received := it.ReceivedQty
+			if it.ID == locked.ID {
+				received = locked.ReceivedQty + req.Qty
 			}
-			if allDone {
-				if err := s.orderRepo.UpdateOrderStatus(tx, order.ID, OrderStatusCompleted, nil); err != nil {
-					return err
-				}
+			if received < it.Qty {
+				allDone = false
+				break
 			}
 		}
-		return nil
+		targetStatus := OrderStatusPartiallyReceived
+		if allDone {
+			targetStatus = OrderStatusCompleted
+		}
+		return s.orderRepo.UpdateOrderStatus(tx, order.ID, targetStatus, nil)
 	})
 	if err != nil {
 		return nil, err

@@ -45,6 +45,19 @@ func (h *PurchaseHandler) ApproveOrder(c *gin.Context) {
 	response.Success(c, nil)
 }
 
+func (h *PurchaseHandler) CancelOrder(c *gin.Context) {
+	orderNo := c.Param("order_no")
+	if orderNo == "" {
+		response.BadRequest(c, "订单号不能为空")
+		return
+	}
+	if err := h.purchaseService.CancelOrder(c.Request.Context(), orderNo); err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.Success(c, nil)
+}
+
 func (h *PurchaseHandler) ListOrders(c *gin.Context) {
 	var req dto.PurchaseOrderListReq
 	if err := c.ShouldBindQuery(&req); err != nil {

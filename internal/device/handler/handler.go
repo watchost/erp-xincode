@@ -1,4 +1,4 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package handler
 
@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/gin-gonic/gin"
 	"erp-system/internal/device/dto"
 	"erp-system/internal/device/service"
 	"erp-system/internal/pkg/response"
+	"github.com/gin-gonic/gin"
 )
 
 type DeviceHandler struct {

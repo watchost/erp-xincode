@@ -26,8 +26,9 @@ const (
 
 // 业务事件类型，写入 fin_voucher.biz_type，便于按事件溯源与对账。
 const (
-	BizTypePurchaseInbound = "purchase_inbound" // 采购入库
-	BizTypeProductionIssue = "production_issue" // 生产领料
+	BizTypePurchaseInbound   = "purchase_inbound"   // 采购入库
+	BizTypeProductionIssue   = "production_issue"   // 生产领料
+	BizTypeProductionReceipt = "production_receipt" // 生产入库/完工报工
 )
 
 // 成本卡来源类型，写入 fin_cost.source_type。
@@ -67,10 +68,10 @@ type CostCardInput struct {
 
 // PostingInput 描述一张需要在业务事务内过账的记账凭证。
 type PostingInput struct {
-	BizType     string         // 业务事件类型，见 BizType* 常量
-	BizNo       string         // 业务单号（入库单号/出库单号），用于溯源
-	Description string         // 摘要
-	Lines       []PostingLine  // 借贷分录行，必须借贷平衡
+	BizType     string          // 业务事件类型，见 BizType* 常量
+	BizNo       string          // 业务单号（入库单号/出库单号），用于溯源
+	Description string          // 摘要
+	Lines       []PostingLine   // 借贷分录行，必须借贷平衡
 	CostCards   []CostCardInput // 同事务写入的成本卡（可为空）
 }
 

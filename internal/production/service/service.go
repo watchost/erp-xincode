@@ -34,6 +34,7 @@ const (
 type ProductionService struct {
 	txManager        *db.TxManager
 	workOrderRepo    repository.WorkOrderRepository
+	receiptRepo      repository.ProductionReceiptRepository
 	bomRepo          repository.BomRepository
 	materialRepo     mdmRepo.MaterialRepository
 	warehouseRepo    mdmRepo.WarehouseRepository
@@ -49,6 +50,7 @@ type ProductionService struct {
 func NewProductionService(
 	txManager *db.TxManager,
 	workOrderRepo repository.WorkOrderRepository,
+	receiptRepo repository.ProductionReceiptRepository,
 	bomRepo repository.BomRepository,
 	materialRepo mdmRepo.MaterialRepository,
 	warehouseRepo mdmRepo.WarehouseRepository,
@@ -63,6 +65,7 @@ func NewProductionService(
 	return &ProductionService{
 		txManager:        txManager,
 		workOrderRepo:    workOrderRepo,
+		receiptRepo:      receiptRepo,
 		bomRepo:          bomRepo,
 		materialRepo:     materialRepo,
 		warehouseRepo:    warehouseRepo,
@@ -349,6 +352,113 @@ func (s *ProductionService) MaterialIssueScan(ctx context.Context, req dto.Mater
 	}, nil
 }
 
+// ProductionReceipt 生产入库/完工报工，与 MaterialIssueScan 对称，全程同一事务：
+//  1. 锁定工单（FOR UPDATE），状态须为已下达/生产中，禁止超出工单计划数量入库；
+//  2. 成品（工单 ProductID）同事务 ApplyInboundTx 入指定仓/库位（移动加权计价）；
+//  3. 写生产入库单 prod_production_receipt；
+//  4. 同事务过账：借 库存商品（1405）/ 贷 生产成本（5001），金额=单位成本×入库数量，
+//     与库存台账 cost_amount 口径一致；
+//  5. produced_qty 累加；达计划数量则置已完成并记 actual_end_at，否则已下达→生产中。
+func (s *ProductionService) ProductionReceipt(ctx context.Context, req dto.ProductionReceiptReq) (*dto.ProductionReceiptRes, error) {
+	if err := s.acquireIdemp(ctx, "production-receipt", req.IdempotencyKey); err != nil {
+		return nil, err
+	}
+
+	warehouse, err := s.warehouseRepo.FindByCode(req.WarehouseCode)
+	if err != nil {
+		return nil, errors.New(30002, 404, "仓库不存在")
+	}
+	location, err := s.locationRepo.FindByCode(warehouse.ID, req.LocationCode)
+	if err != nil {
+		return nil, errors.New(30002, 404, "库位不存在")
+	}
+
+	receiptNo := s.numbers.Next(ctx, "PR")
+	var afterQty float64
+	var finalStatus int
+	completed := false
+
+	err = s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
+		order, err := s.workOrderRepo.FindByWorkOrderNoForUpdate(tx, req.WorkOrderNo)
+		if err != nil {
+			return errors.New(50001, 404, "工单不存在")
+		}
+		if order.Status != WorkOrderStatusReleased && order.Status != WorkOrderStatusInProgress {
+			return errors.New(50004, 409, "工单未下达或已完工，无法入库")
+		}
+		if order.ProducedQty+req.Qty > order.PlanQty {
+			return errors.New(50006, 400, "入库数量超出工单计划数量")
+		}
+
+		// 成品入库：成品即工单 ProductID；同事务写库存与台账（内部再锁库存行）。
+		moveRes, err := s.warehouseService.ApplyInboundTx(ctx, tx, warehouseDto.MoveInput{
+			MaterialID:  order.ProductID,
+			WarehouseID: warehouse.ID,
+			LocationID:  location.ID,
+			Qty:         req.Qty,
+			UnitCost:    req.UnitCost,
+			BizType:     warehouseService.BizTypeProductionInbound,
+			BizNo:       receiptNo,
+		})
+		if err != nil {
+			return err
+		}
+		afterQty = moveRes.AfterQty
+
+		receipt := model.ProProductionReceipt{
+			ReceiptNo:   receiptNo,
+			WorkOrderID: order.ID,
+			MaterialID:  order.ProductID,
+			WarehouseID: warehouse.ID,
+			Qty:         req.Qty,
+			UnitCost:    req.UnitCost,
+			Status:      1,
+			CreatedBy:   auth.UserIDFromContext(ctx),
+		}
+		if err := s.receiptRepo.Create(tx, &receipt); err != nil {
+			return err
+		}
+
+		// 同事务过账：借 库存商品（1405）/ 贷 生产成本（5001），结转完工成本。
+		if err := s.finance.PostTx(ctx, tx, financeService.PostingInput{
+			BizType:     financeService.BizTypeProductionReceipt,
+			BizNo:       receiptNo,
+			Description: fmt.Sprintf("生产入库 %s（工单 %s）", receiptNo, req.WorkOrderNo),
+			Lines: []financeService.PostingLine{
+				{AccountCode: financeService.AccountFinishedGoods, AccountName: "库存商品", Debit: moveRes.CostAmount},
+				{AccountCode: financeService.AccountProductionCost, AccountName: "生产成本", Credit: moveRes.CostAmount},
+			},
+		}); err != nil {
+			return err
+		}
+
+		// 工单进度：累加 produced_qty；达计划数量则完工（记 actual_end_at），否则推进到生产中。
+		newProduced := order.ProducedQty + req.Qty
+		fields := map[string]interface{}{
+			"produced_qty": gorm.Expr("produced_qty + ?", req.Qty),
+		}
+		if newProduced >= order.PlanQty {
+			fields["actual_end_at"] = time.Now()
+			finalStatus = WorkOrderStatusCompleted
+			completed = true
+		} else {
+			finalStatus = WorkOrderStatusInProgress
+		}
+		return s.workOrderRepo.UpdateWorkOrderStatus(tx, order.ID, finalStatus, fields)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &dto.ProductionReceiptRes{
+		ReceiptNo:       receiptNo,
+		Matched:         true,
+		AfterQty:        afterQty,
+		WorkOrderStatus: finalStatus,
+		Completed:       completed,
+	}, nil
+}
+
 func (s *ProductionService) CreateBom(ctx context.Context, req dto.CreateBomReq) (*dto.BomVO, error) {
 	product, err := s.materialRepo.FindByID(req.ProductID)
 	if err != nil {
@@ -378,10 +488,10 @@ func (s *ProductionService) CreateBom(ctx context.Context, req dto.CreateBomReq)
 		}
 
 		bom = model.ProBom{
-			ProductID: req.ProductID,
+			ProductID:  req.ProductID,
 			BomVersion: bomVersion,
-			IsActive:  true,
-			CreatedBy: auth.UserIDFromContext(ctx),
+			IsActive:   true,
+			CreatedBy:  auth.UserIDFromContext(ctx),
 		}
 		if req.EffectiveStart != "" {
 			if t, perr := time.Parse(time.RFC3339, req.EffectiveStart); perr == nil {

@@ -1,12 +1,12 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package repository
 
 import (
 	"time"
 
-	"gorm.io/gorm"
 	"erp-system/internal/finance/model"
+	"gorm.io/gorm"
 )
 
 type CostCardRepository interface {
@@ -16,10 +16,10 @@ type CostCardRepository interface {
 }
 
 type CostSummaryRow struct {
-	ProductID     int64   `json:"product_id"`
-	MaterialCost  float64 `json:"material_cost"`
-	LaborCost     float64 `json:"labor_cost"`
-	OverheadCost  float64 `json:"overhead_cost"`
+	ProductID    int64   `json:"product_id"`
+	MaterialCost float64 `json:"material_cost"`
+	LaborCost    float64 `json:"labor_cost"`
+	OverheadCost float64 `json:"overhead_cost"`
 }
 
 type AccountEntryRepository interface {
@@ -42,6 +42,10 @@ type BudgetRepository interface {
 	// (exists=false, ok=false)（表示本期未设预算，调用方可选择不强制）；
 	// 预算存在但余额不足返回 (exists=true, ok=false)。单条条件 UPDATE，并发安全。
 	ReserveAtomic(tx *gorm.DB, budgetType string, year, month int, amount float64) (exists bool, ok bool, err error)
+	// ReleaseAtomic 在调用方事务内原子释放预算：used_amount 扣减 amount，
+	// 用 GREATEST(...,0) 兜底防止跨期/重复释放导致占用为负。命中预算行返回 true；
+	// 本期未设预算返回 false（调用方视为不启用预算控制，无需释放）。
+	ReleaseAtomic(tx *gorm.DB, budgetType string, year, month int, amount float64) (exists bool, err error)
 }
 
 type costCardRepo struct {
@@ -242,4 +246,14 @@ func (r *budgetRepo) ReserveAtomic(tx *gorm.DB, budgetType string, year, month i
 		return false, false, nil
 	}
 	return true, false, nil
+}
+
+func (r *budgetRepo) ReleaseAtomic(tx *gorm.DB, budgetType string, year, month int, amount float64) (bool, error) {
+	res := tx.Model(&model.FinBudget{}).
+		Where("budget_type = ? AND year = ? AND month = ?", budgetType, year, month).
+		Update("used_amount", gorm.Expr("GREATEST(used_amount - ?, 0)", amount))
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
 }

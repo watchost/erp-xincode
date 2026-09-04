@@ -125,12 +125,8 @@ async function loadData() {
       total.value = res.data?.total || 0
     }
   } catch (e) {
-    tableData.value = [
-      { id: 1, supplier_code: 'S001', name: '供应商A', contact: '张三', level: 1, level_name: 'A级', created_at: '2026-01-15 10:00:00' },
-      { id: 2, supplier_code: 'S002', name: '供应商B', contact: '李四', level: 2, level_name: 'B级', created_at: '2026-02-20 10:00:00' },
-      { id: 3, supplier_code: 'S003', name: '供应商C', contact: '王五', level: 3, level_name: 'C级', created_at: '2026-03-10 10:00:00' }
-    ]
-    total.value = 30
+    tableData.value = []
+    total.value = 0
   } finally {
     loading.value = false
   }
@@ -152,9 +148,7 @@ async function handleCreate() {
       loadData()
     }
   } catch (e) {
-    ElMessage.success('创建成功（模拟）')
-    showCreateDialog.value = false
-    loadData()
+    // 失败时拦截器已提示错误，保留对话框与表单内容供用户重试
   }
 }
 

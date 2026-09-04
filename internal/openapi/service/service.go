@@ -1,4 +1,4 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package service
 
@@ -6,18 +6,18 @@ import (
 	"context"
 	"time"
 
-	"github.com/google/uuid"
 	"erp-system/internal/openapi/dto"
 	"erp-system/internal/openapi/model"
 	"erp-system/internal/openapi/repository"
 	"erp-system/internal/pkg/errors"
+	"github.com/google/uuid"
 )
 
 type OpenAPIService struct {
-	clientRepo   repository.ClientRepository
-	tokenRepo    repository.TokenRepository
-	webhookRepo  repository.WebhookRepository
-	syncLogRepo  repository.SyncLogRepository
+	clientRepo  repository.ClientRepository
+	tokenRepo   repository.TokenRepository
+	webhookRepo repository.WebhookRepository
+	syncLogRepo repository.SyncLogRepository
 }
 
 func NewOpenAPIService(

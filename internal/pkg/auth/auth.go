@@ -8,8 +8,8 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/golang-jwt/jwt/v5"
 	"erp-system/internal/pkg/errors"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // Claims 是自有的 JWT 声明，包含租户、角色、权限以及一次性 jti。

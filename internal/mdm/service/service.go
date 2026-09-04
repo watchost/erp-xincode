@@ -1,4 +1,4 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package service
 
@@ -6,18 +6,27 @@ import (
 	"context"
 	"encoding/json"
 
-	"gorm.io/gorm"
 	"erp-system/internal/mdm/dto"
 	"erp-system/internal/mdm/model"
 	"erp-system/internal/mdm/repository"
 	"erp-system/internal/pkg/errors"
+	"gorm.io/gorm"
 )
 
+// InventoryChecker 判断主数据是否仍被库存引用，用于删除前的引用守卫。
+// 由 warehouse 模块在装配层以适配器注入，避免 mdm 反向依赖 warehouse。
+type InventoryChecker interface {
+	MaterialOnHand(ctx context.Context, materialID int64) (bool, error)
+	WarehouseInUse(ctx context.Context, warehouseID int64) (bool, error)
+	LocationInUse(ctx context.Context, locationID int64) (bool, error)
+}
+
 type MDMService struct {
-	materialRepo   repository.MaterialRepository
-	supplierRepo   repository.SupplierRepository
-	warehouseRepo  repository.WarehouseRepository
-	locationRepo   repository.LocationRepository
+	materialRepo  repository.MaterialRepository
+	supplierRepo  repository.SupplierRepository
+	warehouseRepo repository.WarehouseRepository
+	locationRepo  repository.LocationRepository
+	inventory     InventoryChecker
 }
 
 func NewMDMService(
@@ -25,12 +34,14 @@ func NewMDMService(
 	supplierRepo repository.SupplierRepository,
 	warehouseRepo repository.WarehouseRepository,
 	locationRepo repository.LocationRepository,
+	inventory InventoryChecker,
 ) *MDMService {
 	return &MDMService{
 		materialRepo:  materialRepo,
 		supplierRepo:  supplierRepo,
 		warehouseRepo: warehouseRepo,
 		locationRepo:  locationRepo,
+		inventory:     inventory,
 	}
 }
 
@@ -56,6 +67,11 @@ func (s *MDMService) ListMaterials(ctx context.Context, req dto.MaterialListReq)
 			CostMethod:    m.CostMethod,
 			Attributes:    attrs,
 			Status:        m.Status,
+			MinStock:      m.MinStock,
+			MaxStock:      m.MaxStock,
+			BatchManaged:  m.BatchManaged,
+			SerialManaged: m.SerialManaged,
+			ShelfLifeDays: m.ShelfLifeDays,
 			CreatedAt:     m.CreatedAt.Format("2006-01-02 15:04:05"),
 		})
 	}
@@ -87,6 +103,11 @@ func (s *MDMService) GetMaterial(ctx context.Context, id int64) (*dto.MaterialVO
 		CostMethod:    m.CostMethod,
 		Attributes:    attrs,
 		Status:        m.Status,
+		MinStock:      m.MinStock,
+		MaxStock:      m.MaxStock,
+		BatchManaged:  m.BatchManaged,
+		SerialManaged: m.SerialManaged,
+		ShelfLifeDays: m.ShelfLifeDays,
 		CreatedAt:     m.CreatedAt.Format("2006-01-02 15:04:05"),
 	}, nil
 }
@@ -104,7 +125,23 @@ func (s *MDMService) UpdateMaterial(ctx context.Context, m *model.MdmMaterial) e
 }
 
 func (s *MDMService) DeleteMaterial(ctx context.Context, id int64) error {
-	return nil
+	m, err := s.materialRepo.FindByID(id)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return errors.New(10100, 404, "物料不存在")
+		}
+		return err
+	}
+	if s.inventory != nil {
+		onHand, err := s.inventory.MaterialOnHand(ctx, m.ID)
+		if err != nil {
+			return err
+		}
+		if onHand {
+			return errors.New(10006, 409, "物料存在库存余额，不能删除")
+		}
+	}
+	return s.materialRepo.Delete(id)
 }
 
 func (s *MDMService) ListSuppliers(ctx context.Context, req dto.SupplierListReq) ([]dto.SupplierVO, int64, error) {
@@ -171,11 +208,61 @@ func (s *MDMService) UpdateSupplier(ctx context.Context, sup *model.MdmSupplier)
 }
 
 func (s *MDMService) DeleteSupplier(ctx context.Context, id int64) error {
-	return nil
+	if _, err := s.supplierRepo.FindByID(id); err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return errors.New(10100, 404, "供应商不存在")
+		}
+		return err
+	}
+	return s.supplierRepo.Delete(id)
 }
 
 func (s *MDMService) CreateWarehouse(ctx context.Context, w *model.MdmWarehouse) error {
-	return nil
+	if w.Code == "" || w.Name == "" {
+		return errors.New(10005, 400, "仓库编码和名称不能为空")
+	}
+	existing, _ := s.warehouseRepo.FindByCode(w.Code)
+	if existing != nil {
+		return errors.New(10005, 400, "仓库编码已存在")
+	}
+	return s.warehouseRepo.Create(w)
+}
+
+func (s *MDMService) UpdateWarehouse(ctx context.Context, w *model.MdmWarehouse) error {
+	if w.ID == 0 {
+		return errors.New(10005, 400, "仓库 ID 不能为空")
+	}
+	if _, err := s.warehouseRepo.FindByID(w.ID); err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return errors.New(10100, 404, "仓库不存在")
+		}
+		return err
+	}
+	return s.warehouseRepo.Update(w)
+}
+
+func (s *MDMService) DeleteWarehouse(ctx context.Context, id int64) error {
+	if _, err := s.warehouseRepo.FindByID(id); err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return errors.New(10100, 404, "仓库不存在")
+		}
+		return err
+	}
+	if n, err := s.locationRepo.CountByWarehouse(id); err != nil {
+		return err
+	} else if n > 0 {
+		return errors.New(10006, 409, "仓库下仍有库位，不能删除")
+	}
+	if s.inventory != nil {
+		inUse, err := s.inventory.WarehouseInUse(ctx, id)
+		if err != nil {
+			return err
+		}
+		if inUse {
+			return errors.New(10006, 409, "仓库存在库存，不能删除")
+		}
+	}
+	return s.warehouseRepo.Delete(id)
 }
 
 func (s *MDMService) ListWarehouses(ctx context.Context) ([]dto.WarehouseVO, error) {
@@ -230,18 +317,89 @@ func (s *MDMService) ListLocations(ctx context.Context, warehouseID int64) ([]dt
 			warehouseName = w.Name
 		}
 		vos = append(vos, dto.LocationVO{
-			ID:           l.ID,
-			WarehouseID:  l.WarehouseID,
+			ID:            l.ID,
+			WarehouseID:   l.WarehouseID,
 			WarehouseName: warehouseName,
-			LocationCode: l.LocationCode,
-			Zone:         l.Zone,
-			CreatedAt:    l.CreatedAt.Format("2006-01-02 15:04:05"),
+			LocationCode:  l.LocationCode,
+			Zone:          l.Zone,
+			CreatedAt:     l.CreatedAt.Format("2006-01-02 15:04:05"),
 		})
 	}
 
 	return vos, nil
 }
 
+func (s *MDMService) GetLocation(ctx context.Context, id int64) (*dto.LocationVO, error) {
+	l, err := s.locationRepo.FindByID(id)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, errors.New(10100, 404, "库位不存在")
+		}
+		return nil, err
+	}
+	return s.buildLocationVO(l)
+}
+
 func (s *MDMService) CreateLocation(ctx context.Context, l *model.MdmLocation) error {
-	return nil
+	if l.WarehouseID == 0 || l.LocationCode == "" {
+		return errors.New(10005, 400, "所属仓库和库位编码不能为空")
+	}
+	if _, err := s.warehouseRepo.FindByID(l.WarehouseID); err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return errors.New(10100, 404, "所属仓库不存在")
+		}
+		return err
+	}
+	existing, _ := s.locationRepo.FindByCode(l.WarehouseID, l.LocationCode)
+	if existing != nil {
+		return errors.New(10005, 400, "该仓库下库位编码已存在")
+	}
+	return s.locationRepo.Create(l)
+}
+
+func (s *MDMService) UpdateLocation(ctx context.Context, l *model.MdmLocation) error {
+	if l.ID == 0 {
+		return errors.New(10005, 400, "库位 ID 不能为空")
+	}
+	if _, err := s.locationRepo.FindByID(l.ID); err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return errors.New(10100, 404, "库位不存在")
+		}
+		return err
+	}
+	return s.locationRepo.Update(l)
+}
+
+func (s *MDMService) DeleteLocation(ctx context.Context, id int64) error {
+	if _, err := s.locationRepo.FindByID(id); err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return errors.New(10100, 404, "库位不存在")
+		}
+		return err
+	}
+	if s.inventory != nil {
+		inUse, err := s.inventory.LocationInUse(ctx, id)
+		if err != nil {
+			return err
+		}
+		if inUse {
+			return errors.New(10006, 409, "库位存在库存，不能删除")
+		}
+	}
+	return s.locationRepo.Delete(id)
+}
+
+func (s *MDMService) buildLocationVO(l *model.MdmLocation) (*dto.LocationVO, error) {
+	warehouseName := ""
+	if w, err := s.warehouseRepo.FindByID(l.WarehouseID); err == nil && w != nil {
+		warehouseName = w.Name
+	}
+	return &dto.LocationVO{
+		ID:            l.ID,
+		WarehouseID:   l.WarehouseID,
+		WarehouseName: warehouseName,
+		LocationCode:  l.LocationCode,
+		Zone:          l.Zone,
+		CreatedAt:     l.CreatedAt.Format("2006-01-02 15:04:05"),
+	}, nil
 }

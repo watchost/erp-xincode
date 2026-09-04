@@ -3,7 +3,7 @@
   <div class="page-container">
     <div class="page-header">
       <span class="page-title">采购订单</span>
-      <el-button type="primary" @click="showCreateDialog = true">
+      <el-button v-permission="'purchase:order:create'" type="primary" @click="showCreateDialog = true">
         <el-icon><Plus /></el-icon>
         新建订单
       </el-button>
@@ -27,10 +27,11 @@
           </el-form-item>
           <el-form-item label="状态">
             <el-select v-model="searchForm.status" placeholder="请选择" clearable style="width: 120px">
-              <el-option label="待审批" :value="10" />
-              <el-option label="已审批" :value="20" />
-              <el-option label="部分入库" :value="30" />
-              <el-option label="已完成" :value="40" />
+              <el-option label="草稿" :value="1" />
+              <el-option label="已审批" :value="2" />
+              <el-option label="部分收货" :value="5" />
+              <el-option label="已完成" :value="3" />
+              <el-option label="已取消" :value="4" />
             </el-select>
           </el-form-item>
           <el-form-item>
@@ -48,14 +49,15 @@
             ¥{{ row.total_amount }}
           </template>
         </el-table-column>
-        <el-table-column prop="status_name" label="状态" width="100" />
+        <el-table-column prop="status_desc" label="状态" width="100" />
         <el-table-column prop="plan_arrive_at" label="预计到货" width="160" />
         <el-table-column prop="created_at" label="创建时间" width="180" />
         <el-table-column label="操作" width="180" fixed="right">
           <template #default="{ row }">
             <el-button type="primary" link size="small" @click="viewDetail(row)">查看</el-button>
             <el-button
-              v-if="row.status === 10"
+              v-if="row.status === 1"
+              v-permission="'purchase:order:approve'"
               type="success"
               link
               size="small"
@@ -102,14 +104,22 @@
         </el-form-item>
         <el-form-item label="订单明细">
           <el-table :data="createForm.items" style="width: 100%">
-            <el-table-column prop="material_code" label="物料编码" width="140">
-              <template #default="{ row, $index }">
-                <el-input v-model="row.material_code" size="small" />
-              </template>
-            </el-table-column>
-            <el-table-column prop="material_name" label="物料名称">
+            <el-table-column prop="material_id" label="物料" min-width="220">
               <template #default="{ row }">
-                <el-input v-model="row.material_name" size="small" />
+                <el-select
+                  v-model="row.material_id"
+                  filterable
+                  placeholder="请选择物料"
+                  size="small"
+                  style="width: 100%"
+                >
+                  <el-option
+                    v-for="m in materialList"
+                    :key="m.id"
+                    :label="m.material_code + ' ' + m.name"
+                    :value="m.id"
+                  />
+                </el-select>
               </template>
             </el-table-column>
             <el-table-column prop="qty" label="数量" width="100">
@@ -144,12 +154,13 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { listPurchaseOrders, createPurchaseOrder, approvePurchaseOrder } from '@/api/purchase'
-import { listSuppliers } from '@/api/mdm'
+import { listSuppliers, listMaterials } from '@/api/mdm'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const loading = ref(false)
 const tableData = ref([])
 const supplierList = ref([])
+const materialList = ref([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
@@ -165,19 +176,9 @@ const createForm = reactive({
   supplier_id: null,
   plan_arrive_at: null,
   items: [
-    { material_code: '', material_name: '', qty: 1, price: 0 }
+    { material_id: null, qty: 1, price: 0 }
   ]
 })
-
-function getStatusName(status) {
-  const map = {
-    10: '待审批',
-    20: '已审批',
-    30: '部分入库',
-    40: '已完成'
-  }
-  return map[status] || '未知'
-}
 
 async function loadSuppliers() {
   try {
@@ -186,11 +187,18 @@ async function loadSuppliers() {
       supplierList.value = res.data?.list || []
     }
   } catch (e) {
-    supplierList.value = [
-      { id: 1, name: '供应商A' },
-      { id: 2, name: '供应商B' },
-      { id: 3, name: '供应商C' }
-    ]
+    supplierList.value = []
+  }
+}
+
+async function loadMaterials() {
+  try {
+    const res = await listMaterials({ page: 1, page_size: 100 })
+    if (res.code === 0) {
+      materialList.value = res.data?.list || []
+    }
+  } catch (e) {
+    materialList.value = []
   }
 }
 
@@ -203,20 +211,13 @@ async function loadData() {
       ...searchForm
     })
     if (res.code === 0) {
-      const list = res.data?.list || []
-      tableData.value = list.map(item => ({
-        ...item,
-        status_name: getStatusName(item.status)
-      }))
+      // 状态文案直接用后端返回的 status_desc
+      tableData.value = res.data?.list || []
       total.value = res.data?.total || 0
     }
   } catch (e) {
-    tableData.value = [
-      { id: 1, order_no: 'PO20260701001', supplier_name: '供应商A', total_amount: 50000.00, status: 20, status_name: '已审批', plan_arrive_at: '2026-07-20 10:00', created_at: '2026-07-15 10:30:00' },
-      { id: 2, order_no: 'PO20260701002', supplier_name: '供应商B', total_amount: 32000.00, status: 10, status_name: '待审批', plan_arrive_at: '2026-07-25 14:00', created_at: '2026-07-15 14:20:00' },
-      { id: 3, order_no: 'PO20260701003', supplier_name: '供应商C', total_amount: 85000.00, status: 40, status_name: '已完成', plan_arrive_at: '2026-07-10 09:00', created_at: '2026-07-05 09:15:00' }
-    ]
-    total.value = 30
+    tableData.value = []
+    total.value = 0
   } finally {
     loading.value = false
   }
@@ -231,7 +232,7 @@ function resetSearch() {
 }
 
 function addItem() {
-  createForm.items.push({ material_code: '', material_name: '', qty: 1, price: 0 })
+  createForm.items.push({ material_id: null, qty: 1, price: 0 })
 }
 
 function removeItem(index) {
@@ -239,17 +240,36 @@ function removeItem(index) {
 }
 
 async function handleCreate() {
+  if (!createForm.supplier_id) {
+    ElMessage.warning('请选择供应商')
+    return
+  }
+  const validItems = createForm.items.filter(i => i.material_id && i.qty > 0 && i.price > 0)
+  if (validItems.length === 0) {
+    ElMessage.warning('请至少填写一行有效的物料明细（物料、数量、单价）')
+    return
+  }
   try {
-    const res = await createPurchaseOrder(createForm)
+    const res = await createPurchaseOrder({
+      supplier_id: createForm.supplier_id,
+      plan_arrive_at: createForm.plan_arrive_at
+        ? new Date(createForm.plan_arrive_at).toISOString()
+        : '',
+      items: validItems.map(i => ({
+        material_id: i.material_id,
+        qty: i.qty,
+        price: i.price
+      }))
+    })
     if (res.code === 0) {
       ElMessage.success('创建成功')
       showCreateDialog.value = false
+      // 重置明细为一行空行，避免下次打开残留
+      createForm.items = [{ material_id: null, qty: 1, price: 0 }]
       loadData()
     }
   } catch (e) {
-    ElMessage.success('创建成功（模拟）')
-    showCreateDialog.value = false
-    loadData()
+    // 失败时拦截器已提示错误，保留对话框与表单供用户重试
   }
 }
 
@@ -266,8 +286,7 @@ async function handleApprove(row) {
         loadData()
       }
     } catch (e) {
-      ElMessage.success('审批成功（模拟）')
-      loadData()
+      // 失败时拦截器已提示错误，不刷新列表
     }
   }).catch(() => {})
 }
@@ -278,6 +297,7 @@ function viewDetail(row) {
 
 onMounted(() => {
   loadSuppliers()
+  loadMaterials()
   loadData()
 })
 </script>

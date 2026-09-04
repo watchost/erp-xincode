@@ -18,14 +18,14 @@ type RefreshReq struct {
 }
 
 type UserVO struct {
-	ID        int64  `json:"id"`
-	Username  string `json:"username"`
-	RealName  string `json:"real_name"`
-	Phone     string `json:"phone"`
-	Status    int    `json:"status"`
-	TenantID  int64  `json:"tenant_id"`
+	ID        int64    `json:"id"`
+	Username  string   `json:"username"`
+	RealName  string   `json:"real_name"`
+	Phone     string   `json:"phone"`
+	Status    int      `json:"status"`
+	TenantID  int64    `json:"tenant_id"`
 	Roles     []string `json:"roles,omitempty"`
-	CreatedAt string `json:"created_at"`
+	CreatedAt string   `json:"created_at"`
 }
 
 type UserListReq struct {
@@ -37,12 +37,12 @@ type UserListReq struct {
 // CreateUserReq 是创建用户的入参，独立于 model.SysUser，避免 Mass Assignment
 // 与 PasswordHash `json:"-"` 导致的密码永远无法绑定问题。
 type CreateUserReq struct {
-	Username string `json:"username" binding:"required,min=3,max=64"`
-	Password string `json:"password" binding:"required,min=6,max=128"`
-	RealName string `json:"real_name" binding:"required,max=64"`
-	Phone    string `json:"phone" binding:"omitempty,max=20"`
-	Status   int    `json:"status"`
-	TenantID int64  `json:"tenant_id"`
+	Username string  `json:"username" binding:"required,min=3,max=64"`
+	Password string  `json:"password" binding:"required,min=6,max=128"`
+	RealName string  `json:"real_name" binding:"required,max=64"`
+	Phone    string  `json:"phone" binding:"omitempty,max=20"`
+	Status   int     `json:"status"`
+	TenantID int64   `json:"tenant_id"`
 	RoleIDs  []int64 `json:"role_ids"`
 }
 

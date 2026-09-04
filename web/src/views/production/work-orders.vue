@@ -3,7 +3,7 @@
   <div class="page-container">
     <div class="page-header">
       <span class="page-title">生产工单</span>
-      <el-button type="primary" @click="showCreateDialog = true">
+      <el-button v-permission="'production:wo:create'" type="primary" @click="showCreateDialog = true">
         <el-icon><Plus /></el-icon>
         新建工单
       </el-button>
@@ -13,14 +13,14 @@
       <div class="search-form">
         <el-form :inline="true">
           <el-form-item label="工单号">
-            <el-input v-model="searchForm.wo_no" placeholder="请输入" clearable />
+            <el-input v-model="searchForm.work_order_no" placeholder="请输入" clearable />
           </el-form-item>
           <el-form-item label="状态">
             <el-select v-model="searchForm.status" placeholder="请选择" clearable style="width: 120px">
-              <el-option label="新建" :value="10" />
-              <el-option label="已下达" :value="20" />
-              <el-option label="生产中" :value="30" />
-              <el-option label="已完成" :value="40" />
+              <el-option label="草稿" :value="1" />
+              <el-option label="已下达" :value="2" />
+              <el-option label="生产中" :value="3" />
+              <el-option label="已完成" :value="4" />
             </el-select>
           </el-form-item>
           <el-form-item>
@@ -31,16 +31,17 @@
       </div>
 
       <el-table :data="tableData" style="width: 100%" v-loading="loading">
-        <el-table-column prop="wo_no" label="工单号" width="180" />
+        <el-table-column prop="work_order_no" label="工单号" width="180" />
         <el-table-column prop="product_name" label="产品名称" />
         <el-table-column prop="plan_qty" label="计划数量" width="100" />
-        <el-table-column prop="status_name" label="状态" width="100" />
+        <el-table-column prop="status_desc" label="状态" width="100" />
         <el-table-column prop="created_at" label="创建时间" width="180" />
         <el-table-column label="操作" width="180" fixed="right">
           <template #default="{ row }">
             <el-button type="primary" link size="small">查看</el-button>
             <el-button
-              v-if="row.status === 10"
+              v-if="row.status === 1"
+              v-permission="'production:wo:create'"
               type="success"
               link
               size="small"
@@ -67,17 +68,23 @@
 
     <el-dialog v-model="showCreateDialog" title="新建生产工单" width="600px">
       <el-form :model="createForm" label-width="100px">
-        <el-form-item label="产品编码">
-          <el-input v-model="createForm.product_code" placeholder="请输入产品编码" />
-        </el-form-item>
-        <el-form-item label="产品名称">
-          <el-input v-model="createForm.product_name" placeholder="请输入产品名称" />
+        <el-form-item label="产品">
+          <el-select
+            v-model="createForm.product_id"
+            filterable
+            placeholder="请选择产品"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="m in materialList"
+              :key="m.id"
+              :label="m.material_code + ' ' + m.name"
+              :value="m.id"
+            />
+          </el-select>
         </el-form-item>
         <el-form-item label="计划数量">
           <el-input-number v-model="createForm.plan_qty" :min="1" style="width: 100%" />
-        </el-form-item>
-        <el-form-item label="BOM版本">
-          <el-input v-model="createForm.bom_id" placeholder="BOM ID（可选）" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -91,35 +98,31 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { listWorkOrders, createWorkOrder, releaseWorkOrder } from '@/api/production'
+import { listMaterials } from '@/api/mdm'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const loading = ref(false)
 const tableData = ref([])
+const materialList = ref([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
 const showCreateDialog = ref(false)
 
 const searchForm = reactive({
-  wo_no: '',
+  work_order_no: '',
   status: null
 })
 
 const createForm = reactive({
-  product_code: '',
-  product_name: '',
-  plan_qty: 100,
-  bom_id: ''
+  product_id: null,
+  plan_qty: 100
 })
 
-function getStatusName(status) {
-  const map = {
-    10: '新建',
-    20: '已下达',
-    30: '生产中',
-    40: '已完成'
-  }
-  return map[status] || '未知'
+// 后端返回 RFC3339 时间，统一展示为 YYYY-MM-DD HH:mm
+function formatTime(t) {
+  if (!t) return ''
+  return String(t).replace('T', ' ').slice(0, 16)
 }
 
 async function loadData() {
@@ -132,44 +135,62 @@ async function loadData() {
     })
     if (res.code === 0) {
       const list = res.data?.list || []
+      // 状态文案直接用后端 status_desc；时间格式化展示
       tableData.value = list.map(item => ({
         ...item,
-        status_name: getStatusName(item.status)
+        created_at: formatTime(item.created_at)
       }))
       total.value = res.data?.total || 0
     }
   } catch (e) {
-    tableData.value = [
-      { id: 1, wo_no: 'WO20260701001', product_name: '成品A', plan_qty: 500, status: 30, status_name: '生产中', created_at: '2026-07-15 09:00:00' },
-      { id: 2, wo_no: 'WO20260701002', product_name: '成品B', plan_qty: 300, status: 10, status_name: '新建', created_at: '2026-07-15 10:30:00' },
-      { id: 3, wo_no: 'WO20260701003', product_name: '成品C', plan_qty: 200, status: 20, status_name: '已下达', created_at: '2026-07-14 14:00:00' },
-      { id: 4, wo_no: 'WO20260701004', product_name: '成品A', plan_qty: 400, status: 40, status_name: '已完成', created_at: '2026-07-10 08:00:00' }
-    ]
-    total.value = 25
+    tableData.value = []
+    total.value = 0
   } finally {
     loading.value = false
   }
 }
 
 function resetSearch() {
-  searchForm.wo_no = ''
+  searchForm.work_order_no = ''
   searchForm.status = null
   page.value = 1
   loadData()
 }
 
-async function handleCreate() {
+async function loadMaterials() {
   try {
-    const res = await createWorkOrder(createForm)
+    const res = await listMaterials({ page: 1, page_size: 100 })
+    if (res.code === 0) {
+      materialList.value = res.data?.list || []
+    }
+  } catch (e) {
+    materialList.value = []
+  }
+}
+
+async function handleCreate() {
+  if (!createForm.product_id) {
+    ElMessage.warning('请选择产品')
+    return
+  }
+  if (!createForm.plan_qty || createForm.plan_qty <= 0) {
+    ElMessage.warning('计划数量必须大于 0')
+    return
+  }
+  try {
+    const res = await createWorkOrder({
+      product_id: createForm.product_id,
+      plan_qty: createForm.plan_qty
+    })
     if (res.code === 0) {
       ElMessage.success('创建成功')
       showCreateDialog.value = false
+      createForm.product_id = null
+      createForm.plan_qty = 100
       loadData()
     }
   } catch (e) {
-    ElMessage.success('创建成功（模拟）')
-    showCreateDialog.value = false
-    loadData()
+    // 失败时拦截器已提示错误，保留对话框与表单内容供用户重试
   }
 }
 
@@ -180,19 +201,19 @@ async function handleRelease(row) {
     type: 'warning'
   }).then(async () => {
     try {
-      const res = await releaseWorkOrder(row.wo_no)
+      const res = await releaseWorkOrder(row.work_order_no)
       if (res.code === 0) {
         ElMessage.success('下达成功')
         loadData()
       }
     } catch (e) {
-      ElMessage.success('下达成功（模拟）')
-      loadData()
+      // 失败时拦截器已提示错误，不刷新列表
     }
   }).catch(() => {})
 }
 
 onMounted(() => {
+  loadMaterials()
   loadData()
 })
 </script>

@@ -36,17 +36,32 @@
               </el-input>
             </el-form-item>
             <el-form-item label="仓库">
-              <el-select v-model="inboundForm.warehouse_id" placeholder="请选择仓库" style="width: 100%">
+              <el-select
+                v-model="inboundForm.warehouse_code"
+                placeholder="请选择仓库"
+                style="width: 100%"
+                @change="onWarehouseChange"
+              >
                 <el-option
                   v-for="w in warehouseList"
                   :key="w.id"
                   :label="w.name"
-                  :value="w.id"
+                  :value="w.code"
+                />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="库位">
+              <el-select v-model="inboundForm.location_code" placeholder="请选择库位" style="width: 100%">
+                <el-option
+                  v-for="l in locationList"
+                  :key="l.id"
+                  :label="l.location_code"
+                  :value="l.location_code"
                 />
               </el-select>
             </el-form-item>
             <el-form-item label="入库数量">
-              <el-input-number v-model="inboundForm.qty" :min="0" size="large" />
+              <el-input-number v-model="inboundForm.qty" :min="1" size="large" />
             </el-form-item>
             <el-form-item>
               <el-button type="primary" size="large" @click="handleInbound">确认入库</el-button>
@@ -76,27 +91,33 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
-import { purchaseInboundScan } from '@/api/purchase'
-import { listWarehouses } from '@/api/mdm'
+import { purchaseInboundScan, listPurchaseOrders } from '@/api/purchase'
+import { listWarehouses, listLocations } from '@/api/mdm'
 import { ElMessage } from 'element-plus'
 
 const orderList = ref([])
 const warehouseList = ref([])
+const locationList = ref([])
 const inboundRecords = ref([])
 
 const inboundForm = reactive({
   order_no: '',
   material_code: '',
-  warehouse_id: null,
+  warehouse_code: '',
+  location_code: '',
   qty: 1
 })
 
+// 采购入库只能选择已审批(2)/部分收货(5) 的订单
 async function loadOrders() {
-  orderList.value = [
-    { order_no: 'PO20260701001' },
-    { order_no: 'PO20260701002' },
-    { order_no: 'PO20260701003' }
-  ]
+  try {
+    const res = await listPurchaseOrders({ page: 1, page_size: 100 })
+    if (res.code === 0) {
+      orderList.value = (res.data?.list || []).filter(o => o.status === 2 || o.status === 5)
+    }
+  } catch (e) {
+    orderList.value = []
+  }
 }
 
 async function loadWarehouses() {
@@ -104,14 +125,34 @@ async function loadWarehouses() {
     const res = await listWarehouses()
     if (res.code === 0) {
       warehouseList.value = res.data || []
+      if (warehouseList.value.length > 0) {
+        inboundForm.warehouse_code = warehouseList.value[0].code
+        loadLocations(warehouseList.value[0].id)
+      }
     }
   } catch (e) {
-    warehouseList.value = [
-      { id: 1, name: '主仓库' },
-      { id: 2, name: '良品仓' }
-    ]
-    inboundForm.warehouse_id = 1
+    warehouseList.value = []
   }
+}
+
+async function loadLocations(warehouseId) {
+  try {
+    const res = await listLocations({ warehouse_id: warehouseId })
+    if (res.code === 0) {
+      locationList.value = res.data || []
+      inboundForm.location_code = locationList.value.length > 0 ? locationList.value[0].location_code : ''
+    }
+  } catch (e) {
+    locationList.value = []
+    inboundForm.location_code = ''
+  }
+}
+
+function onWarehouseChange() {
+  inboundForm.location_code = ''
+  const w = warehouseList.value.find(x => x.code === inboundForm.warehouse_code)
+  locationList.value = []
+  if (w) loadLocations(w.id)
 }
 
 function onOrderChange() {
@@ -131,17 +172,29 @@ async function handleInbound() {
     ElMessage.warning('请输入物料编码')
     return
   }
+  if (!inboundForm.warehouse_code) {
+    ElMessage.warning('请选择仓库')
+    return
+  }
+  if (!inboundForm.location_code) {
+    ElMessage.warning('请选择库位')
+    return
+  }
   try {
-    const res = await purchaseInboundScan(inboundForm)
+    const res = await purchaseInboundScan({
+      order_no: inboundForm.order_no,
+      material_code: inboundForm.material_code,
+      warehouse_code: inboundForm.warehouse_code,
+      location_code: inboundForm.location_code,
+      qty: inboundForm.qty
+    })
     if (res.code === 0) {
       ElMessage.success('入库成功')
       addRecord()
       resetForm()
     }
   } catch (e) {
-    ElMessage.success('入库成功（模拟）')
-    addRecord()
-    resetForm()
+    // 失败时拦截器已提示错误，不追加记录、不重置表单，供用户重试
   }
 }
 
@@ -150,7 +203,7 @@ function addRecord() {
     order_no: inboundForm.order_no,
     material_code: inboundForm.material_code,
     qty: inboundForm.qty,
-    warehouse_name: warehouseList.value.find(w => w.id === inboundForm.warehouse_id)?.name || '',
+    warehouse_name: warehouseList.value.find(w => w.code === inboundForm.warehouse_code)?.name || '',
     created_at: new Date().toLocaleString()
   })
 }

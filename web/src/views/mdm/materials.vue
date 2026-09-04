@@ -137,13 +137,8 @@ async function loadData() {
       total.value = res.data?.total || 0
     }
   } catch (e) {
-    tableData.value = [
-      { id: 1, material_code: 'M001', name: '原材料A', spec: '100*100mm', unit: '个', cost_method: 1, cost_method_name: '移动加权平均', status: 1, status_name: '启用', created_at: '2026-06-01 10:00:00' },
-      { id: 2, material_code: 'M002', name: '原材料B', spec: '200*200mm', unit: '个', cost_method: 1, cost_method_name: '移动加权平均', status: 1, status_name: '启用', created_at: '2026-06-02 10:00:00' },
-      { id: 3, material_code: 'M003', name: '半成品C', spec: '成品级', unit: '件', cost_method: 2, cost_method_name: '月末加权平均', status: 1, status_name: '启用', created_at: '2026-06-03 10:00:00' },
-      { id: 4, material_code: 'M004', name: '成品D', spec: '标准款', unit: '台', cost_method: 1, cost_method_name: '移动加权平均', status: 1, status_name: '启用', created_at: '2026-06-04 10:00:00' }
-    ]
-    total.value = 100
+    tableData.value = []
+    total.value = 0
   } finally {
     loading.value = false
   }
@@ -165,9 +160,7 @@ async function handleCreate() {
       loadData()
     }
   } catch (e) {
-    ElMessage.success('创建成功（模拟）')
-    showCreateDialog.value = false
-    loadData()
+    // 失败时拦截器已提示错误，保留对话框与表单内容供用户重试
   }
 }
 

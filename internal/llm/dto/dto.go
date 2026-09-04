@@ -1,4 +1,4 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package dto
 
@@ -30,7 +30,7 @@ type MessageVO struct {
 
 type AnalysisContext struct {
 	UserQuestion string                 `json:"user_question"`
-	BusinessData map[string]interface{}  `json:"business_data"`
+	BusinessData map[string]interface{} `json:"business_data"`
 	UserRole     string                 `json:"user_role"`
 	TimeRange    string                 `json:"time_range"`
 }

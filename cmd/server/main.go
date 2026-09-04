@@ -26,44 +26,44 @@ import (
 	"erp-system/internal/routes"
 
 	iamHandler "erp-system/internal/iam/handler"
-	iamService "erp-system/internal/iam/service"
 	iamRepository "erp-system/internal/iam/repository"
+	iamService "erp-system/internal/iam/service"
 
 	mdmHandler "erp-system/internal/mdm/handler"
-	mdmService "erp-system/internal/mdm/service"
 	mdmRepository "erp-system/internal/mdm/repository"
+	mdmService "erp-system/internal/mdm/service"
 
 	warehouseHandler "erp-system/internal/warehouse/handler"
-	warehouseService "erp-system/internal/warehouse/service"
 	warehouseRepository "erp-system/internal/warehouse/repository"
+	warehouseService "erp-system/internal/warehouse/service"
 
 	purchaseHandler "erp-system/internal/purchase/handler"
-	purchaseService "erp-system/internal/purchase/service"
 	purchaseRepository "erp-system/internal/purchase/repository"
+	purchaseService "erp-system/internal/purchase/service"
 
 	productionHandler "erp-system/internal/production/handler"
-	productionService "erp-system/internal/production/service"
 	productionRepository "erp-system/internal/production/repository"
+	productionService "erp-system/internal/production/service"
 
 	financeHandler "erp-system/internal/finance/handler"
-	financeService "erp-system/internal/finance/service"
 	financeRepository "erp-system/internal/finance/repository"
+	financeService "erp-system/internal/finance/service"
 
 	dashboardHandler "erp-system/internal/dashboard/handler"
 	dashboardService "erp-system/internal/dashboard/service"
 
 	deviceHandler "erp-system/internal/device/handler"
-	deviceService "erp-system/internal/device/service"
 	deviceRepository "erp-system/internal/device/repository"
+	deviceService "erp-system/internal/device/service"
 
-	llmHandler "erp-system/internal/llm/handler"
-	llmService "erp-system/internal/llm/service"
-	llmRepository "erp-system/internal/llm/repository"
 	"erp-system/internal/llm/gateway"
+	llmHandler "erp-system/internal/llm/handler"
+	llmRepository "erp-system/internal/llm/repository"
+	llmService "erp-system/internal/llm/service"
 
 	openapiHandler "erp-system/internal/openapi/handler"
-	openapiService "erp-system/internal/openapi/service"
 	openapiRepository "erp-system/internal/openapi/repository"
+	openapiService "erp-system/internal/openapi/service"
 )
 
 // @title ERP System API
@@ -108,19 +108,28 @@ func main() {
 	)
 	iamH := iamHandler.NewIAMHandler(iamSvc, accessExpire)
 
-	// MDM模块
+	// MDM模块：仅仓储（repo）层先构建；service 依赖仓库服务做删除引用守卫，故后建。
 	mdmMaterialRepo := mdmRepository.NewMaterialRepository(dbConn)
 	mdmSupplierRepo := mdmRepository.NewSupplierRepository(dbConn)
 	mdmWarehouseRepo := mdmRepository.NewWarehouseRepository(dbConn)
 	mdmLocationRepo := mdmRepository.NewLocationRepository(dbConn)
-	mdmSvc := mdmService.NewMDMService(mdmMaterialRepo, mdmSupplierRepo, mdmWarehouseRepo, mdmLocationRepo)
-	mdmH := mdmHandler.NewMDMHandler(mdmSvc)
 
 	// 公共基础设施：单号生成器、幂等键守卫
 	numberGen := bizno.NewGenerator(rdb)
 	idempGuard := idemp.NewGuard(rdb, 24*time.Hour)
 
-	// 财务模块：采购入库/生产领料需在同事务内过账，故先于采购/生产构建，
+	// 仓库模块：先于 MDM/采购/生产构建——MDM 删除守卫、采购入库、生产领退料都
+	// 在各自事务内调用 warehouseService 的同事务库存方法。
+	warehouseInvRepo := warehouseRepository.NewInventoryRepository(dbConn)
+	warehouseLedgerRepo := warehouseRepository.NewStockLedgerRepository(dbConn)
+	warehouseSvc := warehouseService.NewWarehouseService(
+		txManager, warehouseInvRepo, warehouseLedgerRepo,
+		mdmMaterialRepo, mdmWarehouseRepo, mdmLocationRepo,
+		numberGen, idempGuard,
+	)
+	warehouseH := warehouseHandler.NewWarehouseHandler(warehouseSvc)
+
+	// 财务模块：采购入库/生产领退料需在同事务内过账，故先于采购/生产构建，
 	// 作为 financeService.Poster 注入下游业务服务。
 	financeCostCardRepo := financeRepository.NewCostCardRepository(dbConn)
 	financeAccountEntryRepo := financeRepository.NewAccountEntryRepository(dbConn)
@@ -131,15 +140,9 @@ func main() {
 	)
 	financeH := financeHandler.NewFinanceHandler(financeSvc)
 
-	// 仓库模块
-	warehouseInvRepo := warehouseRepository.NewInventoryRepository(dbConn)
-	warehouseLedgerRepo := warehouseRepository.NewStockLedgerRepository(dbConn)
-	warehouseSvc := warehouseService.NewWarehouseService(
-		txManager, warehouseInvRepo, warehouseLedgerRepo,
-		mdmMaterialRepo, mdmWarehouseRepo, mdmLocationRepo,
-		numberGen, idempGuard,
-	)
-	warehouseH := warehouseHandler.NewWarehouseHandler(warehouseSvc)
+	// MDM service：warehouseSvc 作为 InventoryChecker 注入，删除主数据前做库存引用守卫。
+	mdmSvc := mdmService.NewMDMService(mdmMaterialRepo, mdmSupplierRepo, mdmWarehouseRepo, mdmLocationRepo, warehouseSvc)
+	mdmH := mdmHandler.NewMDMHandler(mdmSvc)
 
 	// 采购模块
 	purchaseOrderRepo := purchaseRepository.NewPurchaseOrderRepository(dbConn)
@@ -153,16 +156,21 @@ func main() {
 
 	// 生产模块
 	productionWorkOrderRepo := productionRepository.NewWorkOrderRepository(dbConn)
+	productionReceiptRepo := productionRepository.NewProductionReceiptRepository(dbConn)
 	productionBomRepo := productionRepository.NewBomRepository(dbConn)
 	productionSvc := productionService.NewProductionService(
-		txManager, productionWorkOrderRepo, productionBomRepo,
+		txManager, productionWorkOrderRepo, productionReceiptRepo, productionBomRepo,
 		mdmMaterialRepo, mdmWarehouseRepo, mdmLocationRepo,
 		warehouseSvc, financeSvc, numberGen, idempGuard,
 	)
 	productionH := productionHandler.NewProductionHandler(productionSvc)
 
+	// LLM 网关（仪表盘智能分析与 LLM 会话共用；未配置 api_key 时仪表盘回退为本地数据摘要）
+	llmGateway := gateway.NewQwenGateway(viper.GetString("llm.api_key"), viper.GetString("llm.model"))
+	llmEnabled := viper.GetString("llm.api_key") != ""
+
 	// 仪表模块
-	dashboardSvc := dashboardService.NewDashboardService(txManager, dbConn)
+	dashboardSvc := dashboardService.NewDashboardService(txManager, dbConn, llmGateway, llmEnabled)
 	dashboardH := dashboardHandler.NewDashboardHandler(dashboardSvc)
 
 	// 设备模块
@@ -173,7 +181,6 @@ func main() {
 	// LLM模块
 	llmSessionRepo := llmRepository.NewSessionRepository(dbConn)
 	llmMessageRepo := llmRepository.NewMessageRepository(dbConn)
-	llmGateway := gateway.NewQwenGateway(viper.GetString("llm.api_key"), viper.GetString("llm.model"))
 	llmSvc := llmService.NewLLMService(llmSessionRepo, llmMessageRepo, llmGateway)
 	llmH := llmHandler.NewLLMHandler(llmSvc)
 
@@ -235,18 +242,19 @@ func main() {
 	})
 
 	routes.RegisterRoutes(r, routes.Deps{
-		JWTSecret:  jwtSecret,
-		LoginLimit: middleware.LoginRateLimit(rdb, 10, time.Minute),
-		IAM:        iamH,
-		MDM:        mdmH,
-		Warehouse:  warehouseH,
-		Purchase:   purchaseH,
-		Production: productionH,
-		Finance:    financeH,
-		Dashboard:  dashboardH,
-		Device:     deviceH,
-		LLM:        llmH,
-		OpenAPI:    openapiH,
+		JWTSecret:    jwtSecret,
+		JWTBlacklist: iamSvc.IsBlacklisted,
+		LoginLimit:   middleware.LoginRateLimit(rdb, 10, time.Minute),
+		IAM:          iamH,
+		MDM:          mdmH,
+		Warehouse:    warehouseH,
+		Purchase:     purchaseH,
+		Production:   productionH,
+		Finance:      financeH,
+		Dashboard:    dashboardH,
+		Device:       deviceH,
+		LLM:          llmH,
+		OpenAPI:      openapiH,
 	})
 
 	host := viper.GetString("server.host")

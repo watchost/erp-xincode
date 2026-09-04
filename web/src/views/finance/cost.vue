@@ -65,8 +65,9 @@
       </template>
       <el-table :data="costCards" style="width: 100%">
         <el-table-column prop="cost_type_name" label="成本类型" width="120" />
-        <el-table-column prop="material_name" label="物料名称" />
-        <el-table-column prop="period" label="期间" width="120" />
+        <el-table-column prop="product_code" label="产品编码" width="140" />
+        <el-table-column prop="product_name" label="产品名称" />
+        <el-table-column prop="cost_date" label="成本日期" width="120" />
         <el-table-column prop="amount" label="金额" width="150">
           <template #default="{ row }">
             ¥{{ row.amount }}
@@ -97,24 +98,25 @@ async function loadData() {
       listCostCards({ page: 1, page_size: 20 })
     ])
     if (summaryRes.code === 0) {
-      costSummary.value = summaryRes.data || {}
+      // 后端返回按产品汇总的数组，这里聚合成总成本对象供卡片与饼图使用（真实数据）
+      const rows = Array.isArray(summaryRes.data) ? summaryRes.data : []
+      costSummary.value = rows.reduce(
+        (acc, r) => ({
+          material_cost: (acc.material_cost || 0) + (r.material_cost || 0),
+          labor_cost: (acc.labor_cost || 0) + (r.labor_cost || 0),
+          overhead_cost: (acc.overhead_cost || 0) + (r.overhead_cost || 0),
+          total_cost: (acc.total_cost || 0) + (r.total_cost || 0)
+        }),
+        {}
+      )
     }
     if (cardsRes.code === 0) {
       costCards.value = cardsRes.data?.list || []
     }
   } catch (e) {
-    costSummary.value = {
-      material_cost: 680000,
-      labor_cost: 320000,
-      overhead_cost: 150000,
-      total_cost: 1150000
-    }
-    costCards.value = [
-      { cost_type_name: '材料成本', material_name: '原材料A', period: '2026-07', amount: 280000 },
-      { cost_type_name: '材料成本', material_name: '原材料B', period: '2026-07', amount: 200000 },
-      { cost_type_name: '人工成本', material_name: '成品A', period: '2026-07', amount: 180000 },
-      { cost_type_name: '制造费用', material_name: '成品A', period: '2026-07', amount: 150000 }
-    ]
+    // 失败时响应拦截器已弹出错误提示；置空，不使用假数据
+    costSummary.value = {}
+    costCards.value = []
   }
   nextTick(() => {
     initCharts()
@@ -129,13 +131,14 @@ function initCharts() {
       legend: { data: ['材料成本', '人工成本', '制造费用'] },
       xAxis: {
         type: 'category',
-        data: ['1月', '2月', '3月', '4月', '5月', '6月', '7月']
+        data: []
       },
       yAxis: { type: 'value' },
       series: [
-        { name: '材料成本', type: 'line', smooth: true, data: [52, 58, 61, 55, 63, 70, 68], itemStyle: { color: '#409EFF' } },
-        { name: '人工成本', type: 'line', smooth: true, data: [28, 30, 29, 31, 32, 30, 32], itemStyle: { color: '#67C23A' } },
-        { name: '制造费用', type: 'line', smooth: true, data: [12, 13, 14, 13, 15, 14, 15], itemStyle: { color: '#E6A23C' } }
+        // 后端暂未返回月度成本趋势序列，data 置空，不编造数字
+        { name: '材料成本', type: 'line', smooth: true, data: [], itemStyle: { color: '#409EFF' } },
+        { name: '人工成本', type: 'line', smooth: true, data: [], itemStyle: { color: '#67C23A' } },
+        { name: '制造费用', type: 'line', smooth: true, data: [], itemStyle: { color: '#E6A23C' } }
       ]
     })
   }
@@ -148,10 +151,11 @@ function initCharts() {
         {
           type: 'pie',
           radius: '70%',
+          // 成本构成取自 cost-summary 接口聚合后的真实金额
           data: [
-            { value: 680, name: '材料成本' },
-            { value: 320, name: '人工成本' },
-            { value: 150, name: '制造费用' }
+            { value: costSummary.value.material_cost || 0, name: '材料成本' },
+            { value: costSummary.value.labor_cost || 0, name: '人工成本' },
+            { value: costSummary.value.overhead_cost || 0, name: '制造费用' }
           ],
           color: ['#409EFF', '#67C23A', '#E6A23C']
         }

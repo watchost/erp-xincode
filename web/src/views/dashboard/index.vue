@@ -9,9 +9,9 @@
               <el-icon><ShoppingCart /></el-icon>
             </div>
             <div class="stat-info">
-              <p class="stat-label">采购订单</p>
-              <p class="stat-value">{{ overviewData.purchaseOrderCount || 0 }}</p>
-              <p class="stat-desc">本月新增</p>
+              <p class="stat-label">待处理采购订单</p>
+              <p class="stat-value">{{ overviewData.pending_purchase_orders || 0 }}</p>
+              <p class="stat-desc">待审批</p>
             </div>
           </div>
         </el-card>
@@ -19,13 +19,13 @@
       <el-col :span="6">
         <el-card class="stat-card">
           <div class="stat-content">
-            <div class="stat-icon icon-sales">
-              <el-icon><Money /></el-icon>
+            <div class="stat-icon icon-production">
+              <el-icon><Operation /></el-icon>
             </div>
             <div class="stat-info">
-              <p class="stat-label">销售额</p>
-              <p class="stat-value">¥{{ overviewData.salesAmount || 0 }}</p>
-              <p class="stat-desc">本月累计</p>
+              <p class="stat-label">进行中工单</p>
+              <p class="stat-value">{{ overviewData.in_progress_work_orders || 0 }}</p>
+              <p class="stat-desc">已下达/生产中</p>
             </div>
           </div>
         </el-card>
@@ -34,12 +34,12 @@
         <el-card class="stat-card">
           <div class="stat-content">
             <div class="stat-icon icon-stock">
-              <el-icon><Box /></el-icon>
+              <el-icon><Money /></el-icon>
             </div>
             <div class="stat-info">
-              <p class="stat-label">库存物料</p>
-              <p class="stat-value">{{ overviewData.materialCount || 0 }}</p>
-              <p class="stat-desc">物料种类</p>
+              <p class="stat-label">库存总值</p>
+              <p class="stat-value">¥{{ formatAmount(overviewData.inventory_value) }}</p>
+              <p class="stat-desc">结存成本金额</p>
             </div>
           </div>
         </el-card>
@@ -52,8 +52,8 @@
             </div>
             <div class="stat-info">
               <p class="stat-label">库存预警</p>
-              <p class="stat-value">{{ overviewData.stockAlertCount || 0 }}</p>
-              <p class="stat-desc">需关注</p>
+              <p class="stat-value">{{ overviewData.stock_alert_count || 0 }}</p>
+              <p class="stat-desc">可用量偏低</p>
             </div>
           </div>
         </el-card>
@@ -72,9 +72,21 @@
       <el-col :span="10">
         <el-card>
           <template #header>
-            <span>物料分类占比</span>
+            <span>库存预警</span>
           </template>
-          <div ref="pieChartRef" class="chart-container"></div>
+          <el-table :data="stockAlerts" style="width: 100%" size="small" max-height="300">
+            <el-table-column prop="material_name" label="物料" min-width="120" />
+            <el-table-column prop="warehouse_name" label="仓库" width="90" />
+            <el-table-column prop="available_qty" label="可用量" width="80">
+              <template #default="{ row }">
+                <span :style="{ color: row.level === 'danger' ? '#F56C6C' : '#E6A23C', fontWeight: 600 }">
+                  {{ row.available_qty }}
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="min_stock" label="安全库存" width="80" />
+          </el-table>
+          <el-empty v-if="!stockAlerts.length" description="库存水位正常" :image-size="60" />
         </el-card>
       </el-col>
     </el-row>
@@ -93,12 +105,12 @@
                 ¥{{ row.total_amount }}
               </template>
             </el-table-column>
-            <el-table-column prop="status_name" label="状态" width="100" />
+            <el-table-column prop="status_desc" label="状态" width="100" />
             <el-table-column prop="created_at" label="创建时间" width="180" />
           </el-table>
         </el-card>
       </el-col>
-      <el-col :span="10">
+      <el-col v-permission="'dashboard:llm'" :span="10">
         <el-card>
           <template #header>
             <span>AI智能分析助手</span>
@@ -141,26 +153,32 @@
 <script setup>
 import { ref, onMounted, nextTick } from 'vue'
 import * as echarts from 'echarts'
-import { getOverview, getRecentOrders, getLLMAnalysis } from '@/api/dashboard'
+import { getOverview, getRecentOrders, getDashboardStockAlerts, getLLMAnalysis } from '@/api/dashboard'
 
 const trendChartRef = ref(null)
-const pieChartRef = ref(null)
 const chatMessagesRef = ref(null)
 
 const overviewData = ref({})
 const recentOrders = ref([])
+const stockAlerts = ref([])
 const question = ref('')
 const analyzing = ref(false)
 const chatMessages = ref([])
 
 let trendChart = null
-let pieChart = null
+
+// 金额千分位 + 两位小数，避免大额库存值挤版
+function formatAmount(v) {
+  const n = Number(v || 0)
+  return n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
 
 async function loadData() {
   try {
-    const [overviewRes, ordersRes] = await Promise.all([
+    const [overviewRes, ordersRes, alertsRes] = await Promise.all([
       getOverview(),
-      getRecentOrders()
+      getRecentOrders(),
+      getDashboardStockAlerts()
     ])
     if (overviewRes.code === 0) {
       overviewData.value = overviewRes.data || {}
@@ -168,22 +186,18 @@ async function loadData() {
     if (ordersRes.code === 0) {
       recentOrders.value = ordersRes.data || []
     }
+    if (alertsRes.code === 0) {
+      stockAlerts.value = alertsRes.data || []
+    }
     nextTick(() => {
       initCharts()
     })
   } catch (e) {
+    // 失败时响应拦截器已弹出错误提示；KPI 与列表置空，不编造数字
     console.error(e)
-    overviewData.value = {
-      purchaseOrderCount: 42,
-      salesAmount: 1258000,
-      materialCount: 328,
-      stockAlertCount: 15
-    }
-    recentOrders.value = [
-      { order_no: 'PO20260701001', supplier_name: '供应商A', total_amount: 50000, status_name: '已审批', created_at: '2026-07-15 10:30' },
-      { order_no: 'PO20260701002', supplier_name: '供应商B', total_amount: 32000, status_name: '待审批', created_at: '2026-07-15 14:20' },
-      { order_no: 'PO20260701003', supplier_name: '供应商C', total_amount: 85000, status_name: '已入库', created_at: '2026-07-14 09:15' }
-    ]
+    overviewData.value = {}
+    recentOrders.value = []
+    stockAlerts.value = []
     nextTick(() => {
       initCharts()
     })
@@ -198,7 +212,7 @@ function initCharts() {
       legend: { data: ['入库量', '出库量'] },
       xAxis: {
         type: 'category',
-        data: ['1月', '2月', '3月', '4月', '5月', '6月', '7月']
+        data: []
       },
       yAxis: { type: 'value' },
       series: [
@@ -206,35 +220,15 @@ function initCharts() {
           name: '入库量',
           type: 'line',
           smooth: true,
-          data: [120, 132, 101, 134, 90, 230, 210],
+          data: [],
           itemStyle: { color: '#67C23A' }
         },
         {
           name: '出库量',
           type: 'line',
           smooth: true,
-          data: [100, 112, 91, 124, 80, 200, 180],
+          data: [],
           itemStyle: { color: '#E6A23C' }
-        }
-      ]
-    })
-  }
-
-  if (pieChartRef.value) {
-    pieChart = echarts.init(pieChartRef.value)
-    pieChart.setOption({
-      tooltip: { trigger: 'item' },
-      series: [
-        {
-          type: 'pie',
-          radius: ['40%', '70%'],
-          avoidLabelOverlap: false,
-          data: [
-            { value: 1048, name: '原材料' },
-            { value: 735, name: '半成品' },
-            { value: 580, name: '成品' },
-            { value: 484, name: '辅料' }
-          ]
         }
       ]
     })
@@ -260,15 +254,14 @@ async function sendQuestion() {
     if (res.code === 0) {
       chatMessages.value.push({ role: 'assistant', content: res.data?.answer || '暂无分析结果' })
     } else {
-      chatMessages.value.push({
-        role: 'assistant',
-        content: '根据当前数据分析，您可以关注以下几点：\n1. 库存整体健康度良好\n2. 有15种物料库存低于安全库存，建议及时补货\n3. 本月采购订单量同比增长15%'
-      })
+      // 业务失败：拦截器已弹错误，这里不编造 AI 结论
+      chatMessages.value.push({ role: 'assistant', content: 'AI 分析暂时不可用，请稍后再试。' })
     }
   } catch (e) {
+    // 网络/服务失败：拦截器已弹错误，这里不编造 AI 结论
     chatMessages.value.push({
       role: 'assistant',
-      content: 'AI服务暂时不可用，请稍后再试。'
+      content: 'AI 分析暂时不可用，请稍后再试。'
     })
   } finally {
     analyzing.value = false
@@ -308,7 +301,7 @@ onMounted(() => {
         color: #fff;
 
         &.icon-purchase { background: linear-gradient(135deg, #667eea, #764ba2); }
-        &.icon-sales { background: linear-gradient(135deg, #f093fb, #f5576c); }
+        &.icon-production { background: linear-gradient(135deg, #43cea2, #185a9d); }
         &.icon-stock { background: linear-gradient(135deg, #4facfe, #00f2fe); }
         &.icon-alert { background: linear-gradient(135deg, #fa709a, #fee140); }
       }

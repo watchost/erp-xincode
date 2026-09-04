@@ -1,18 +1,23 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package dto
 
 type MaterialVO struct {
-	ID            int64           `json:"id"`
-	MaterialCode  string          `json:"material_code"`
-	Name          string          `json:"name"`
-	Spec          string          `json:"spec"`
-	CategoryID    int64           `json:"category_id"`
-	Unit          string          `json:"unit"`
-	CostMethod    int             `json:"cost_method"`
-	Attributes    map[string]any  `json:"attributes"`
-	Status        int             `json:"status"`
-	CreatedAt     string          `json:"created_at"`
+	ID            int64          `json:"id"`
+	MaterialCode  string         `json:"material_code"`
+	Name          string         `json:"name"`
+	Spec          string         `json:"spec"`
+	CategoryID    int64          `json:"category_id"`
+	Unit          string         `json:"unit"`
+	CostMethod    int            `json:"cost_method"`
+	Attributes    map[string]any `json:"attributes"`
+	Status        int            `json:"status"`
+	MinStock      *float64       `json:"min_stock"`
+	MaxStock      *float64       `json:"max_stock"`
+	BatchManaged  bool           `json:"batch_managed"`
+	SerialManaged bool           `json:"serial_managed"`
+	ShelfLifeDays int            `json:"shelf_life_days"`
+	CreatedAt     string         `json:"created_at"`
 }
 
 type MaterialListReq struct {
@@ -23,13 +28,13 @@ type MaterialListReq struct {
 }
 
 type SupplierVO struct {
-	ID            int64           `json:"id"`
-	SupplierCode  string          `json:"supplier_code"`
-	Name          string          `json:"name"`
-	Contact       string          `json:"contact"`
-	Level         int             `json:"level"`
-	Attributes    map[string]any  `json:"attributes"`
-	CreatedAt     string          `json:"created_at"`
+	ID           int64          `json:"id"`
+	SupplierCode string         `json:"supplier_code"`
+	Name         string         `json:"name"`
+	Contact      string         `json:"contact"`
+	Level        int            `json:"level"`
+	Attributes   map[string]any `json:"attributes"`
+	CreatedAt    string         `json:"created_at"`
 }
 
 type SupplierListReq struct {
@@ -48,10 +53,10 @@ type WarehouseVO struct {
 }
 
 type LocationVO struct {
-	ID           int64  `json:"id"`
-	WarehouseID  int64  `json:"warehouse_id"`
+	ID            int64  `json:"id"`
+	WarehouseID   int64  `json:"warehouse_id"`
 	WarehouseName string `json:"warehouse_name"`
-	LocationCode string `json:"location_code"`
-	Zone         string `json:"zone"`
-	CreatedAt    string `json:"created_at"`
+	LocationCode  string `json:"location_code"`
+	Zone          string `json:"zone"`
+	CreatedAt     string `json:"created_at"`
 }

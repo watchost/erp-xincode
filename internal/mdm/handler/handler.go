@@ -1,4 +1,4 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package handler
 
@@ -6,11 +6,11 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/gin-gonic/gin"
 	"erp-system/internal/mdm/dto"
 	"erp-system/internal/mdm/model"
 	"erp-system/internal/mdm/service"
 	"erp-system/internal/pkg/response"
+	"github.com/gin-gonic/gin"
 )
 
 type MDMHandler struct {
@@ -210,6 +210,41 @@ func (h *MDMHandler) ListLocations(c *gin.Context) {
 	c.JSON(http.StatusOK, response.OK(list))
 }
 
+func (h *MDMHandler) UpdateWarehouse(c *gin.Context) {
+	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
+	var w model.MdmWarehouse
+	if err := c.ShouldBindJSON(&w); err != nil {
+		c.JSON(http.StatusBadRequest, response.Err(10005, "参数错误: "+err.Error()))
+		return
+	}
+	w.ID = id
+	if err := h.mdmService.UpdateWarehouse(c.Request.Context(), &w); err != nil {
+		c.JSON(http.StatusOK, response.FromError(err))
+		return
+	}
+	c.JSON(http.StatusOK, response.OK(nil))
+}
+
+func (h *MDMHandler) DeleteWarehouse(c *gin.Context) {
+	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err := h.mdmService.DeleteWarehouse(c.Request.Context(), id); err != nil {
+		c.JSON(http.StatusOK, response.FromError(err))
+		return
+	}
+	c.JSON(http.StatusOK, response.OK(nil))
+}
+
+func (h *MDMHandler) GetLocation(c *gin.Context) {
+	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
+	l, err := h.mdmService.GetLocation(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusOK, response.FromError(err))
+		return
+	}
+
+	c.JSON(http.StatusOK, response.OK(l))
+}
+
 func (h *MDMHandler) CreateLocation(c *gin.Context) {
 	var l model.MdmLocation
 	if err := c.ShouldBindJSON(&l); err != nil {
@@ -217,6 +252,30 @@ func (h *MDMHandler) CreateLocation(c *gin.Context) {
 		return
 	}
 	if err := h.mdmService.CreateLocation(c.Request.Context(), &l); err != nil {
+		c.JSON(http.StatusOK, response.FromError(err))
+		return
+	}
+	c.JSON(http.StatusOK, response.OK(nil))
+}
+
+func (h *MDMHandler) UpdateLocation(c *gin.Context) {
+	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
+	var l model.MdmLocation
+	if err := c.ShouldBindJSON(&l); err != nil {
+		c.JSON(http.StatusBadRequest, response.Err(10005, "参数错误: "+err.Error()))
+		return
+	}
+	l.ID = id
+	if err := h.mdmService.UpdateLocation(c.Request.Context(), &l); err != nil {
+		c.JSON(http.StatusOK, response.FromError(err))
+		return
+	}
+	c.JSON(http.StatusOK, response.OK(nil))
+}
+
+func (h *MDMHandler) DeleteLocation(c *gin.Context) {
+	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err := h.mdmService.DeleteLocation(c.Request.Context(), id); err != nil {
 		c.JSON(http.StatusOK, response.FromError(err))
 		return
 	}

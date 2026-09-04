@@ -1,4 +1,4 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package model
 
@@ -7,15 +7,16 @@ import (
 )
 
 type PurPurchaseOrder struct {
-	ID            int64     `json:"id"`
-	OrderNo       string    `json:"order_no"`
-	SupplierID    int64     `json:"supplier_id"`
-	Status        int       `json:"status"`
-	TotalAmount   float64   `json:"total_amount"`
-	PlanArriveAt  time.Time `json:"plan_arrive_at"`
-	CreatedBy     int64     `json:"created_by"`
-	CreatedAt     time.Time `json:"created_at"`
-	ApprovedAt    time.Time `json:"approved_at"`
+	ID           int64     `json:"id"`
+	OrderNo      string    `json:"order_no"`
+	SupplierID   int64     `json:"supplier_id"`
+	Status       int       `json:"status"`
+	TotalAmount  float64   `json:"total_amount"`
+	PlanArriveAt time.Time `json:"plan_arrive_at"`
+	CreatedBy    int64     `json:"created_by"`
+	CreatedAt    time.Time `json:"created_at"`
+	ApprovedAt   time.Time `json:"approved_at"`
+	ApprovedBy   int64     `json:"approved_by"`
 }
 
 type PurPurchaseOrderItem struct {
@@ -40,6 +41,6 @@ type PurPurchaseInbound struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
-func (PurPurchaseOrder) TableName() string { return "pur_purchase_order" }
+func (PurPurchaseOrder) TableName() string     { return "pur_purchase_order" }
 func (PurPurchaseOrderItem) TableName() string { return "pur_purchase_order_item" }
-func (PurPurchaseInbound) TableName() string { return "pur_purchase_inbound" }
+func (PurPurchaseInbound) TableName() string   { return "pur_purchase_inbound" }

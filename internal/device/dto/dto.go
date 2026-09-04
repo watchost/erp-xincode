@@ -1,4 +1,4 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package dto
 
@@ -15,12 +15,12 @@ type DeviceHeartbeatReq struct {
 }
 
 type DeviceScanEvent struct {
-	DeviceCode  string  `json:"device_code"`
-	EventType   string  `json:"event_type"`
-	MaterialCode string `json:"material_code"`
-	Qty         float64 `json:"qty"`
-	LocationCode string `json:"location_code"`
-	Timestamp   int64   `json:"timestamp"`
+	DeviceCode   string  `json:"device_code"`
+	EventType    string  `json:"event_type"`
+	MaterialCode string  `json:"material_code"`
+	Qty          float64 `json:"qty"`
+	LocationCode string  `json:"location_code"`
+	Timestamp    int64   `json:"timestamp"`
 }
 
 type DeviceVO struct {

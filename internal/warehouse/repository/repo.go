@@ -18,6 +18,10 @@ type InventoryRepository interface {
 	// Upsert 插入或更新库存行（依赖 (material_id, warehouse_id, location_id) 唯一约束）。
 	Upsert(tx *gorm.DB, inv *model.InvInventory) error
 	List(warehouseID int64, materialCode, materialName string, page, pageSize int) ([]model.InvInventory, int64, error)
+	// Exists* 用于主数据删除前的引用守卫：判断是否仍有在库余额（qty > 0）。
+	ExistsMaterialOnHand(materialID int64) (bool, error)
+	ExistsWarehouseInUse(warehouseID int64) (bool, error)
+	ExistsLocationInUse(locationID int64) (bool, error)
 }
 
 type StockLedgerRepository interface {
@@ -88,6 +92,30 @@ func (r *inventoryRepo) List(warehouseID int64, materialCode, materialName strin
 		return nil, 0, err
 	}
 	return list, total, nil
+}
+
+func (r *inventoryRepo) existsWhere(where string, arg int64) (bool, error) {
+	var count int64
+	err := r.db.Model(&model.InvInventory{}).
+		Where(where, arg).
+		Where("qty > 0").
+		Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func (r *inventoryRepo) ExistsMaterialOnHand(materialID int64) (bool, error) {
+	return r.existsWhere("material_id = ?", materialID)
+}
+
+func (r *inventoryRepo) ExistsWarehouseInUse(warehouseID int64) (bool, error) {
+	return r.existsWhere("warehouse_id = ?", warehouseID)
+}
+
+func (r *inventoryRepo) ExistsLocationInUse(locationID int64) (bool, error) {
+	return r.existsWhere("location_id = ?", locationID)
 }
 
 type stockLedgerRepo struct {

@@ -15,17 +15,17 @@ type CreatePurchaseOrderReq struct {
 }
 
 type PurchaseOrderVO struct {
-	ID           int64                  `json:"id"`
-	OrderNo      string                 `json:"order_no"`
-	SupplierID   int64                  `json:"supplier_id"`
-	SupplierName string                 `json:"supplier_name"`
-	Status       int                    `json:"status"`
-	StatusDesc   string                 `json:"status_desc"`
-	TotalAmount  float64                `json:"total_amount"`
-	PlanArriveAt string                 `json:"plan_arrive_at"`
-	CreatedBy    int64                  `json:"created_by"`
-	CreatedAt    string                 `json:"created_at"`
-	Items        []PurchaseOrderItemVO  `json:"items"`
+	ID           int64                 `json:"id"`
+	OrderNo      string                `json:"order_no"`
+	SupplierID   int64                 `json:"supplier_id"`
+	SupplierName string                `json:"supplier_name"`
+	Status       int                   `json:"status"`
+	StatusDesc   string                `json:"status_desc"`
+	TotalAmount  float64               `json:"total_amount"`
+	PlanArriveAt string                `json:"plan_arrive_at"`
+	CreatedBy    int64                 `json:"created_by"`
+	CreatedAt    string                `json:"created_at"`
+	Items        []PurchaseOrderItemVO `json:"items"`
 }
 
 type PurchaseOrderItemVO struct {

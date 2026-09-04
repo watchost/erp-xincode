@@ -1,4 +1,4 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package model
 
@@ -7,21 +7,21 @@ import (
 )
 
 type LlmSession struct {
-	ID           int64     `json:"id"`
-	UserID       int64     `json:"user_id"`
-	Title        string    `json:"title"`
-	ContextMeta  []byte    `json:"context_meta"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID          int64     `json:"id"`
+	UserID      int64     `json:"user_id"`
+	Title       string    `json:"title"`
+	ContextMeta []byte    `json:"context_meta"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type LlmMessage struct {
-	ID          int64     `json:"id"`
-	SessionID   int64     `json:"session_id"`
-	Role        int       `json:"role"`
-	Content     string    `json:"content"`
-	Intent      string    `json:"intent"`
-	MetaJSON    []byte    `json:"meta_json"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID        int64     `json:"id"`
+	SessionID int64     `json:"session_id"`
+	Role      int       `json:"role"`
+	Content   string    `json:"content"`
+	Intent    string    `json:"intent"`
+	MetaJSON  []byte    `json:"meta_json"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 const (

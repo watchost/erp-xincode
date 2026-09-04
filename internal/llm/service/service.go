@@ -1,4 +1,4 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package service
 
@@ -13,9 +13,9 @@ import (
 )
 
 type LLMService struct {
-	sessionRepo  repository.SessionRepository
-	messageRepo  repository.MessageRepository
-	llmGateway   gateway.LLMGateway
+	sessionRepo repository.SessionRepository
+	messageRepo repository.MessageRepository
+	llmGateway  gateway.LLMGateway
 }
 
 func NewLLMService(
@@ -34,8 +34,8 @@ func (s *LLMService) Chat(ctx context.Context, userID int64, req dto.ChatReq) (*
 	sessionID := req.SessionID
 	if sessionID == 0 {
 		session := &model.LlmSession{
-			UserID:    userID,
-			Title:     truncateTitle(req.Question, 50),
+			UserID: userID,
+			Title:  truncateTitle(req.Question, 50),
 		}
 		if err := s.sessionRepo.Create(session); err != nil {
 			return nil, err

@@ -157,12 +157,9 @@ async function loadData() {
       total.value = res.data?.total || 0
     }
   } catch (e) {
-    tableData.value = [
-      { id: 1, device_code: 'SCANNER-001', type: 1, type_name: '扫码枪', brand: '霍尼韦尔', protocol: 'USB', status: 1, status_name: '在线', last_heartbeat: '2026-07-17 10:30:00', created_at: '2026-06-01 10:00:00' },
-      { id: 2, device_code: 'RFID-001', type: 2, type_name: 'RFID读写器', brand: '斑马', protocol: 'TCP', status: 1, status_name: '在线', last_heartbeat: '2026-07-17 10:29:00', created_at: '2026-06-05 10:00:00' },
-      { id: 3, device_code: 'PDA-001', type: 3, type_name: 'PDA手持终端', brand: '优博讯', protocol: 'WiFi', status: 0, status_name: '离线', last_heartbeat: '2026-07-16 18:00:00', created_at: '2026-06-10 10:00:00' }
-    ]
-    total.value = 15
+    // 失败时响应拦截器已弹出错误提示，这里清空列表，不使用假数据
+    tableData.value = []
+    total.value = 0
   } finally {
     loading.value = false
   }
@@ -185,9 +182,7 @@ async function handleRegister() {
       loadData()
     }
   } catch (e) {
-    ElMessage.success('注册成功（模拟）')
-    showRegisterDialog.value = false
-    loadData()
+    // 失败时响应拦截器已弹出错误提示；不关闭对话框、不刷新，保留用户输入
   }
 }
 

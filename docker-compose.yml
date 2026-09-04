@@ -15,6 +15,7 @@ services:
       - ./migrations/0003_iam_permissions.up.sql:/docker-entrypoint-initdb.d/003_iam_permissions.sql
       - ./migrations/0004_production_schema.up.sql:/docker-entrypoint-initdb.d/004_production_schema.sql
       - ./migrations/0005_finance_schema.up.sql:/docker-entrypoint-initdb.d/005_finance_schema.sql
+      - ./migrations/0006_mdm_crud_purchase_production.up.sql:/docker-entrypoint-initdb.d/006_mdm_crud_purchase_production.sql
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U erp_user -d erp_system"]

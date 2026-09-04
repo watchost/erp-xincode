@@ -21,9 +21,9 @@
               >
                 <el-option
                   v-for="wo in workOrderList"
-                  :key="wo.wo_no"
-                  :label="wo.wo_no"
-                  :value="wo.wo_no"
+                  :key="wo.work_order_no"
+                  :label="wo.work_order_no + (wo.product_name ? '（' + wo.product_name + '）' : '')"
+                  :value="wo.work_order_no"
                 />
               </el-select>
             </el-form-item>
@@ -35,17 +35,32 @@
               </el-input>
             </el-form-item>
             <el-form-item label="仓库">
-              <el-select v-model="outboundForm.warehouse_id" placeholder="请选择仓库" style="width: 100%">
+              <el-select
+                v-model="outboundForm.warehouse_code"
+                placeholder="请选择仓库"
+                style="width: 100%"
+                @change="onWarehouseChange"
+              >
                 <el-option
                   v-for="w in warehouseList"
                   :key="w.id"
                   :label="w.name"
-                  :value="w.id"
+                  :value="w.code"
+                />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="库位">
+              <el-select v-model="outboundForm.location_code" placeholder="请选择库位" style="width: 100%">
+                <el-option
+                  v-for="l in locationList"
+                  :key="l.id"
+                  :label="l.location_code"
+                  :value="l.location_code"
                 />
               </el-select>
             </el-form-item>
             <el-form-item label="领料数量">
-              <el-input-number v-model="outboundForm.qty" :min="0" size="large" />
+              <el-input-number v-model="outboundForm.qty" :min="1" size="large" />
             </el-form-item>
             <el-form-item>
               <el-button type="primary" size="large" @click="handleOutbound">确认领料</el-button>
@@ -75,27 +90,32 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
-import { materialIssueScan } from '@/api/production'
-import { listWarehouses } from '@/api/mdm'
+import { materialIssueScan, listWorkOrders } from '@/api/production'
+import { listWarehouses, listLocations } from '@/api/mdm'
 import { ElMessage } from 'element-plus'
 
 const workOrderList = ref([])
 const warehouseList = ref([])
+const locationList = ref([])
 const outboundRecords = ref([])
 
 const outboundForm = reactive({
   work_order_no: '',
   material_code: '',
-  warehouse_id: null,
+  warehouse_code: '',
+  location_code: '',
   qty: 1
 })
 
 async function loadWorkOrders() {
-  workOrderList.value = [
-    { wo_no: 'WO20260701001' },
-    { wo_no: 'WO20260701002' },
-    { wo_no: 'WO20260701003' }
-  ]
+  try {
+    const res = await listWorkOrders({ page: 1, page_size: 100 })
+    if (res.code === 0) {
+      workOrderList.value = res.data?.list || []
+    }
+  } catch (e) {
+    workOrderList.value = []
+  }
 }
 
 async function loadWarehouses() {
@@ -103,14 +123,35 @@ async function loadWarehouses() {
     const res = await listWarehouses()
     if (res.code === 0) {
       warehouseList.value = res.data || []
+      if (warehouseList.value.length > 0) {
+        outboundForm.warehouse_code = warehouseList.value[0].code
+        loadLocations(warehouseList.value[0].id)
+      }
     }
   } catch (e) {
-    warehouseList.value = [
-      { id: 1, name: '主仓库' },
-      { id: 2, name: '良品仓' }
-    ]
-    outboundForm.warehouse_id = 1
+    warehouseList.value = []
   }
+}
+
+async function loadLocations(warehouseId) {
+  try {
+    const res = await listLocations({ warehouse_id: warehouseId })
+    if (res.code === 0) {
+      locationList.value = res.data || []
+      outboundForm.location_code = locationList.value.length > 0 ? locationList.value[0].location_code : ''
+    }
+  } catch (e) {
+    locationList.value = []
+    outboundForm.location_code = ''
+  }
+}
+
+// 切换仓库：重置库位并加载该仓库下的库位
+function onWarehouseChange() {
+  outboundForm.location_code = ''
+  const w = warehouseList.value.find(x => x.code === outboundForm.warehouse_code)
+  locationList.value = []
+  if (w) loadLocations(w.id)
 }
 
 function handleScan() {
@@ -126,17 +167,29 @@ async function handleOutbound() {
     ElMessage.warning('请输入物料编码')
     return
   }
+  if (!outboundForm.warehouse_code) {
+    ElMessage.warning('请选择仓库')
+    return
+  }
+  if (!outboundForm.location_code) {
+    ElMessage.warning('请选择库位')
+    return
+  }
   try {
-    const res = await materialIssueScan(outboundForm)
+    const res = await materialIssueScan({
+      work_order_no: outboundForm.work_order_no,
+      material_code: outboundForm.material_code,
+      warehouse_code: outboundForm.warehouse_code,
+      location_code: outboundForm.location_code,
+      qty: outboundForm.qty
+    })
     if (res.code === 0) {
       ElMessage.success('领料成功')
       addRecord()
       resetForm()
     }
   } catch (e) {
-    ElMessage.success('领料成功（模拟）')
-    addRecord()
-    resetForm()
+    // 失败时拦截器已提示错误，不追加记录、不重置表单，供用户重试
   }
 }
 
@@ -145,7 +198,7 @@ function addRecord() {
     work_order_no: outboundForm.work_order_no,
     material_code: outboundForm.material_code,
     qty: outboundForm.qty,
-    warehouse_name: warehouseList.value.find(w => w.id === outboundForm.warehouse_id)?.name || '',
+    warehouse_name: warehouseList.value.find(w => w.code === outboundForm.warehouse_code)?.name || '',
     created_at: new Date().toLocaleString()
   })
 }

@@ -1,10 +1,10 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package repository
 
 import (
-	"gorm.io/gorm"
 	"erp-system/internal/llm/model"
+	"gorm.io/gorm"
 )
 
 type SessionRepository interface {

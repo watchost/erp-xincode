@@ -278,6 +278,20 @@ func (s *WarehouseService) ApplyOutboundTx(ctx context.Context, tx *gorm.DB, in 
 	return dto.MoveResult{AfterQty: inv.Qty, AvgCost: inv.AvgCost, CostAmount: costAmount}, nil
 }
 
+// MaterialOnHand / WarehouseInUse / LocationInUse 实现 mdm 模块的
+// service.InventoryChecker 接口，供主数据删除前做引用守卫。
+func (s *WarehouseService) MaterialOnHand(ctx context.Context, materialID int64) (bool, error) {
+	return s.invRepo.ExistsMaterialOnHand(materialID)
+}
+
+func (s *WarehouseService) WarehouseInUse(ctx context.Context, warehouseID int64) (bool, error) {
+	return s.invRepo.ExistsWarehouseInUse(warehouseID)
+}
+
+func (s *WarehouseService) LocationInUse(ctx context.Context, locationID int64) (bool, error) {
+	return s.invRepo.ExistsLocationInUse(locationID)
+}
+
 func (s *WarehouseService) ListInventory(ctx context.Context, req dto.InventoryQuery) ([]dto.InventoryVO, int64, error) {
 	list, total, err := s.invRepo.List(req.WarehouseID, req.MaterialCode, req.MaterialName, req.Page, req.PageSize)
 	if err != nil {

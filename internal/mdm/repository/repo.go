@@ -1,10 +1,10 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package repository
 
 import (
-	"gorm.io/gorm"
 	"erp-system/internal/mdm/model"
+	"gorm.io/gorm"
 )
 
 type MaterialRepository interface {
@@ -12,6 +12,7 @@ type MaterialRepository interface {
 	FindByID(id int64) (*model.MdmMaterial, error)
 	Create(material *model.MdmMaterial) error
 	Update(material *model.MdmMaterial) error
+	Delete(id int64) error
 	List(code, name string, page, pageSize int) ([]model.MdmMaterial, int64, error)
 }
 
@@ -20,6 +21,7 @@ type SupplierRepository interface {
 	FindByID(id int64) (*model.MdmSupplier, error)
 	Create(supplier *model.MdmSupplier) error
 	Update(supplier *model.MdmSupplier) error
+	Delete(id int64) error
 	List(code, name string, page, pageSize int) ([]model.MdmSupplier, int64, error)
 }
 
@@ -27,12 +29,19 @@ type WarehouseRepository interface {
 	FindByCode(code string) (*model.MdmWarehouse, error)
 	FindByID(id int64) (*model.MdmWarehouse, error)
 	List() ([]model.MdmWarehouse, error)
+	Create(w *model.MdmWarehouse) error
+	Update(w *model.MdmWarehouse) error
+	Delete(id int64) error
 }
 
 type LocationRepository interface {
 	FindByCode(warehouseID int64, locationCode string) (*model.MdmLocation, error)
 	FindByID(id int64) (*model.MdmLocation, error)
 	List(warehouseID int64) ([]model.MdmLocation, error)
+	Create(l *model.MdmLocation) error
+	Update(l *model.MdmLocation) error
+	Delete(id int64) error
+	CountByWarehouse(warehouseID int64) (int64, error)
 }
 
 type materialRepo struct {
@@ -65,6 +74,10 @@ func (r *materialRepo) Create(material *model.MdmMaterial) error {
 
 func (r *materialRepo) Update(material *model.MdmMaterial) error {
 	return r.db.Save(material).Error
+}
+
+func (r *materialRepo) Delete(id int64) error {
+	return r.db.Delete(&model.MdmMaterial{}, id).Error
 }
 
 func (r *materialRepo) List(code, name string, page, pageSize int) ([]model.MdmMaterial, int64, error) {
@@ -118,6 +131,10 @@ func (r *supplierRepo) Update(supplier *model.MdmSupplier) error {
 	return r.db.Save(supplier).Error
 }
 
+func (r *supplierRepo) Delete(id int64) error {
+	return r.db.Delete(&model.MdmSupplier{}, id).Error
+}
+
 func (r *supplierRepo) List(code, name string, page, pageSize int) ([]model.MdmSupplier, int64, error) {
 	var suppliers []model.MdmSupplier
 	var total int64
@@ -169,6 +186,18 @@ func (r *warehouseRepo) List() ([]model.MdmWarehouse, error) {
 	return warehouses, nil
 }
 
+func (r *warehouseRepo) Create(w *model.MdmWarehouse) error {
+	return r.db.Create(w).Error
+}
+
+func (r *warehouseRepo) Update(w *model.MdmWarehouse) error {
+	return r.db.Save(w).Error
+}
+
+func (r *warehouseRepo) Delete(id int64) error {
+	return r.db.Delete(&model.MdmWarehouse{}, id).Error
+}
+
 type locationRepo struct {
 	db *gorm.DB
 }
@@ -203,4 +232,22 @@ func (r *locationRepo) List(warehouseID int64) ([]model.MdmLocation, error) {
 		return nil, err
 	}
 	return locations, nil
+}
+
+func (r *locationRepo) Create(l *model.MdmLocation) error {
+	return r.db.Create(l).Error
+}
+
+func (r *locationRepo) Update(l *model.MdmLocation) error {
+	return r.db.Save(l).Error
+}
+
+func (r *locationRepo) Delete(id int64) error {
+	return r.db.Delete(&model.MdmLocation{}, id).Error
+}
+
+func (r *locationRepo) CountByWarehouse(warehouseID int64) (int64, error) {
+	var count int64
+	err := r.db.Model(&model.MdmLocation{}).Where("warehouse_id = ?", warehouseID).Count(&count).Error
+	return count, err
 }

@@ -1,4 +1,4 @@
-﻿// Copyright 2026 zhouhouping. All Rights Reserved.
+// Copyright 2026 zhouhouping. All Rights Reserved.
 
 package repository
 
@@ -22,6 +22,11 @@ type WorkOrderRepository interface {
 
 	UpdateMaterialIssuedQty(tx *gorm.DB, materialID int64, qty float64) error
 	UpdateWorkOrderStatus(tx *gorm.DB, workOrderID int64, status int, fields map[string]interface{}) error
+}
+
+type ProductionReceiptRepository interface {
+	Create(tx *gorm.DB, receipt *model.ProProductionReceipt) error
+	List(workOrderID int64, page, pageSize int) ([]model.ProProductionReceipt, int64, error)
 }
 
 type BomRepository interface {
@@ -180,4 +185,32 @@ func (r *bomRepo) DeactivateByProductID(tx *gorm.DB, productID int64) error {
 	return tx.Model(&model.ProBom{}).
 		Where("product_id = ? AND is_active = ?", productID, true).
 		Update("is_active", false).Error
+}
+
+type productionReceiptRepo struct {
+	db *gorm.DB
+}
+
+func NewProductionReceiptRepository(db *gorm.DB) ProductionReceiptRepository {
+	return &productionReceiptRepo{db: db}
+}
+
+func (r *productionReceiptRepo) Create(tx *gorm.DB, receipt *model.ProProductionReceipt) error {
+	return tx.Create(receipt).Error
+}
+
+func (r *productionReceiptRepo) List(workOrderID int64, page, pageSize int) ([]model.ProProductionReceipt, int64, error) {
+	var list []model.ProProductionReceipt
+	var total int64
+	query := r.db.Model(&model.ProProductionReceipt{})
+	if workOrderID > 0 {
+		query = query.Where("work_order_id = ?", workOrderID)
+	}
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if err := query.Order("created_at DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&list).Error; err != nil {
+		return nil, 0, err
+	}
+	return list, total, nil
 }

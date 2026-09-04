@@ -103,9 +103,14 @@ func Timeout(timeout time.Duration) gin.HandlerFunc {
 	}
 }
 
+// BlacklistChecker 在每次请求时判断某个 jti 是否已被登出拉黑。
+// 由 IAM service 实现（查 Redis）；为 nil 时不做黑名单校验。
+type BlacklistChecker func(ctx context.Context, jti string) bool
+
 // JWTAuth 真正校验 Bearer token 并把用户上下文写入 gin.Context。
 // P0 之前的实现只判断 header 非空即放行，属于任意伪造可通过的严重漏洞。
-func JWTAuth(secret string) gin.HandlerFunc {
+// checker 非空时，会额外校验 token 的 jti 是否在登出黑名单中。
+func JWTAuth(secret string, checker BlacklistChecker) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := extractBearer(c.GetHeader("Authorization"))
 		if token == "" {
@@ -121,6 +126,12 @@ func JWTAuth(secret string) gin.HandlerFunc {
 				code = ae.Code
 			}
 			c.AbortWithStatusJSON(http.StatusUnauthorized, response.Err(code, err.Error()))
+			return
+		}
+
+		// 登出黑名单：已登出的 token 即使未过期也一律拒绝。
+		if checker != nil && claims.JTI != "" && checker(c.Request.Context(), claims.JTI) {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, response.Err(10003, "登录已失效，请重新登录"))
 			return
 		}
 
@@ -170,8 +181,8 @@ func RequirePermission(codes ...string) gin.HandlerFunc {
 }
 
 // OptionalAuth 与 JWTAuth 相同，但没有 token 时也放行（用于可选登录的接口）。
-func OptionalAuth(secret string) gin.HandlerFunc {
-	jwtAuth := JWTAuth(secret)
+func OptionalAuth(secret string, checker BlacklistChecker) gin.HandlerFunc {
+	jwtAuth := JWTAuth(secret, checker)
 	return func(c *gin.Context) {
 		if extractBearer(c.GetHeader("Authorization")) == "" {
 			c.Next()
