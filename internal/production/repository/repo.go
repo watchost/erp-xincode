@@ -14,7 +14,7 @@ type WorkOrderRepository interface {
 	Create(tx *gorm.DB, order *model.ProWorkOrder) error
 	CreateMaterials(tx *gorm.DB, materials []model.ProWorkOrderMaterial) error
 	FindByWorkOrderNo(workOrderNo string) (*model.ProWorkOrder, error)
-	List(workOrderNo string, productID int64, status int, page, pageSize int) ([]model.ProWorkOrder, int64, error)
+	List(workOrderNo string, productID int64, status int, page, pageSize int, scopes ...func(*gorm.DB) *gorm.DB) ([]model.ProWorkOrder, int64, error)
 	FindMaterials(workOrderID int64) ([]model.ProWorkOrderMaterial, error)
 
 	// 事务内加锁读，防止并发领料超发。
@@ -82,10 +82,10 @@ func (r *workOrderRepo) FindMaterialForUpdate(tx *gorm.DB, id int64) (*model.Pro
 	return &m, nil
 }
 
-func (r *workOrderRepo) List(workOrderNo string, productID int64, status int, page, pageSize int) ([]model.ProWorkOrder, int64, error) {
+func (r *workOrderRepo) List(workOrderNo string, productID int64, status int, page, pageSize int, scopes ...func(*gorm.DB) *gorm.DB) ([]model.ProWorkOrder, int64, error) {
 	var list []model.ProWorkOrder
 	var total int64
-	query := r.db.Model(&model.ProWorkOrder{})
+	query := r.db.Model(&model.ProWorkOrder{}).Scopes(scopes...)
 	if workOrderNo != "" {
 		query = query.Where("work_order_no LIKE ?", "%"+workOrderNo+"%")
 	}

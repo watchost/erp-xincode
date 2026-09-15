@@ -175,21 +175,20 @@
 
 ### 2.1 IAM 完整化（第 3 周）
 
-详见 [development/features/iam.md](development/features/iam.md)。新增接口：
+> **后端已完成（2026-09-15，迁移 0008；前端 web/ 待跟进）。**
+> 完整接口表与逻辑见 [development/features/iam.md](development/features/iam.md)。
 
-- `POST /auth/logout`（拉黑当前 jti）
-- `POST /auth/change-password`
-- `POST /auth/reset-password/:id`（管理员）
-- `GET /roles`、`POST /roles`、`PUT /roles/:id`、`DELETE /roles/:id`
-- `GET /roles/:id/permissions`、`PUT /roles/:id/permissions`（分配权限）
-- `PUT /users/:id/roles`（分配角色）
-- `GET /users/:id` 补数据权限校验
-- `GET /audit-logs`（审计日志查询页）
-- `DELETE /users/:id`（停用，软删除）
+交付内容：
 
-修复 `CreateUser` 无法设密码的问题：新增 `CreateUserReq` DTO 含 `password` 字段（bcrypt 哈希）。
-
-实现登录防爆破：Redis 记录 `login:fail:<ip>` 和 `login:fail:<username>`，5 次失败锁定 15 分钟，连续失败要求图形验证码。
+- 用户：软删除（同名可重建）、管理员重置密码（空密码→12 位随机明文仅返回一次）、独立角色分配、列表/详情数据权限；
+- 角色：CRUD、权限全量替换、自定义部门配置；权限树；内置 admin 角色保护；
+- 部门：部门树（物化路径）、CRUD、删除守卫；本期不支持调整父子关系；
+- 数据权限：5 档（全部/本部门/本部门及下级/仅本人/自定义部门），多角色取最宽；
+  已落地用户管理、采购订单列表、工单列表（建单写 dept_id）；主数据/库存/财务共享数据本期不套；
+- 登录防爆破：`loginfail:user/ip` 双维度计数，3 次失败强制图形验证码（自绘 PNG、5min、一次性），5 次锁定 15 分钟（10007/423）；
+- 强制改密（mustchg 标记 + 中间件白名单，10009/403）；
+- JWT claims 增 dept_id/data_scope；改密/重置后旧 token 立即失效（pwd:chg 时间戳）；
+- 审计：登录留痕由 service 写；写操作由 Audit 中间件异步写（4KB JSON 上限、敏感字段递归打码）；`GET /iam/audit-logs` 查询。
 
 ### 2.2 MDM 主数据（第 3 周）
 
@@ -268,8 +267,8 @@
 - [ ] 设备能通过 WebSocket 连接并发送心跳，断连检测；
 - [ ] LLM 多轮对话有上下文，会话不能越权；
 - [ ] OpenAPI 用 token 访问受保护资源，无 token 返回 401；
-- [ ] 审计日志记录所有写操作；
-- [ ] 用户/角色/权限 CRUD 完整。
+- [x] 审计日志记录所有写操作（IAM §2.1：Audit 中间件异步留痕 + 敏感字段打码，2026-09-15）；
+- [x] 用户/角色/权限 CRUD 完整（IAM §2.1 后端，2026-09-15；前端待跟进）。
 
 ---
 

@@ -47,8 +47,10 @@ const (
 	PermMDMWarehouse = "mdm:warehouse"
 	PermMDMLocation  = "mdm:location"
 
-	PermIAMUser = "iam:user"
-	PermIAMRole = "iam:role"
+	PermIAMUser      = "iam:user"
+	PermIAMRole      = "iam:role"
+	PermIAMDept      = "iam:dept"
+	PermIAMAuditView = "iam:audit:view"
 
 	PermDeviceManage = "device:manage"
 	PermLLMChat      = "llm:chat"
@@ -58,8 +60,10 @@ const (
 // Deps bundles all HTTP handlers and infrastructure config needed for routing.
 type Deps struct {
 	JWTSecret    string
-	JWTBlacklist middleware.BlacklistChecker // 可选：登出 jti 黑名单校验，为 nil 时不校验
-	LoginLimit   gin.HandlerFunc             // 可选：登录限流中间件，为 nil 时不限流
+	JWTBlacklist middleware.BlacklistChecker   // jti 黑名单 + 改密失效校验，为 nil 时不校验
+	LoginLimit   gin.HandlerFunc               // 可选：登录/验证码限流中间件，为 nil 时不限流
+	ForceChange  middleware.ForceChangeChecker // 可选：强制改密状态查询
+	Audit        gin.HandlerFunc               // 可选：写操作审计中间件，为 nil 时不审计
 	IAM          *iamHandler.IAMHandler
 	MDM          *mdmHandler.MDMHandler
 	Warehouse    *warehouseHandler.WarehouseHandler
@@ -86,18 +90,36 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 	r.POST("/api/v1/login", loginChain...)
 	r.POST("/api/v1/refresh", d.IAM.RefreshToken)
 
+	// 图形验证码（公开，同样套登录限流，防接口刷量）
+	captchaChain := make([]gin.HandlerFunc, 0, 2)
+	if d.LoginLimit != nil {
+		captchaChain = append(captchaChain, d.LoginLimit)
+	}
+	captchaChain = append(captchaChain, d.IAM.GetCaptcha)
+	r.GET("/api/v1/auth/captcha", captchaChain...)
+
 	// OpenAPI 对外网关：OAuth2 取 token 不走内部 JWT
 	r.POST("/api/v1/oauth/token", d.OpenAPI.GetToken)
 	r.POST("/api/v1/oauth/refresh", d.OpenAPI.RefreshToken)
 
 	api := r.Group("/api/v1")
 	api.Use(middleware.JWTAuth(d.JWTSecret, d.JWTBlacklist))
+	if d.ForceChange != nil {
+		api.Use(middleware.ForcePasswordChange(d.ForceChange))
+	}
+	if d.Audit != nil {
+		api.Use(d.Audit)
+	}
 	{
 		// 当前用户信息 / 登出 / 改密：只要登录即可
 		api.GET("/users/profile", d.IAM.GetUserInfo)
 		api.GET("/users/permissions", d.IAM.GetPermissions)
 		api.POST("/auth/logout", d.IAM.Logout)
 		api.POST("/auth/change-password", d.IAM.ChangePassword)
+
+		// 部门树/权限树：登录即可（用户表单、角色授权页都要用）
+		api.GET("/iam/departments", d.IAM.DepartmentTree)
+		api.GET("/iam/permissions", d.IAM.PermissionTree)
 
 		// IAM 用户管理
 		iamG := api.Group("/iam", middleware.RequirePermission(PermIAMUser))
@@ -106,7 +128,35 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 			iamG.GET("/users/:id", d.IAM.GetUser)
 			iamG.POST("/users", d.IAM.CreateUser)
 			iamG.PUT("/users/:id", d.IAM.UpdateUser)
+			iamG.DELETE("/users/:id", d.IAM.DeleteUser)
+			iamG.POST("/users/:id/reset-password", d.IAM.ResetPassword)
+			iamG.PUT("/users/:id/roles", d.IAM.AssignUserRoles)
 		}
+
+		// IAM 角色管理
+		roleG := api.Group("/iam", middleware.RequirePermission(PermIAMRole))
+		{
+			roleG.GET("/roles", d.IAM.ListRoles)
+			roleG.POST("/roles", d.IAM.CreateRole)
+			roleG.GET("/roles/:id", d.IAM.GetRoleDetail)
+			roleG.PUT("/roles/:id", d.IAM.UpdateRole)
+			roleG.DELETE("/roles/:id", d.IAM.DeleteRole)
+			roleG.GET("/roles/:id/permissions", d.IAM.GetRoleDetail)
+			roleG.PUT("/roles/:id/permissions", d.IAM.AssignPermissions)
+			roleG.GET("/roles/:id/departments", d.IAM.GetRoleDetail)
+			roleG.PUT("/roles/:id/departments", d.IAM.AssignRoleDepts)
+		}
+
+		// IAM 部门管理（树查询登录即可，写操作需 iam:dept）
+		deptG := api.Group("/iam", middleware.RequirePermission(PermIAMDept))
+		{
+			deptG.POST("/departments", d.IAM.CreateDepartment)
+			deptG.PUT("/departments/:id", d.IAM.UpdateDepartment)
+			deptG.DELETE("/departments/:id", d.IAM.DeleteDepartment)
+		}
+
+		// 审计日志查询
+		api.GET("/iam/audit-logs", middleware.RequirePermission(PermIAMAuditView), d.IAM.ListAuditLogs)
 
 		mdm := api.Group("/mdm")
 		{

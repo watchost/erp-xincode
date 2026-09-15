@@ -15,6 +15,7 @@ import (
 	mdmRepo "erp-system/internal/mdm/repository"
 	"erp-system/internal/pkg/auth"
 	"erp-system/internal/pkg/bizno"
+	"erp-system/internal/pkg/datascope"
 	"erp-system/internal/pkg/db"
 	"erp-system/internal/pkg/decimalx"
 	"erp-system/internal/pkg/errors"
@@ -33,6 +34,11 @@ const (
 	WorkOrderStatusCompleted  = 4
 )
 
+// DataScopeResolver 由 IAM service 满足（窄接口，避免反向依赖 iam 包）。
+type DataScopeResolver interface {
+	ResolveDataScope(ctx context.Context, ownerCol, deptCol string) (datascope.Params, error)
+}
+
 type ProductionService struct {
 	txManager        *db.TxManager
 	workOrderRepo    repository.WorkOrderRepository
@@ -47,6 +53,12 @@ type ProductionService struct {
 	idemp            interface {
 		Acquire(ctx context.Context, scope, key string) error
 	}
+	scopeResolver DataScopeResolver // 可选：未装配时列表不做数据权限过滤（测试/内部调用）
+}
+
+// SetDataScopeResolver 装配数据权限解析器（main 中注入 IAMService）。
+func (s *ProductionService) SetDataScopeResolver(r DataScopeResolver) {
+	s.scopeResolver = r
 }
 
 func NewProductionService(
@@ -122,6 +134,7 @@ func (s *ProductionService) CreateWorkOrder(ctx context.Context, req dto.CreateW
 			ProducedQty: decimal.Zero,
 			Status:      WorkOrderStatusDraft,
 			CreatedBy:   auth.UserIDFromContext(ctx),
+			DeptID:      auth.DeptIDFromContext(ctx),
 		}
 		if req.PlanStartAt != "" {
 			if t, perr := time.Parse(time.RFC3339, req.PlanStartAt); perr == nil {
@@ -176,7 +189,15 @@ func (s *ProductionService) ReleaseWorkOrder(ctx context.Context, workOrderNo st
 }
 
 func (s *ProductionService) ListWorkOrders(ctx context.Context, req dto.WorkOrderListReq) ([]*dto.WorkOrderVO, int64, error) {
-	list, total, err := s.workOrderRepo.List(req.WorkOrderNo, req.ProductID, req.Status, req.Page, req.PageSize)
+	var scopes []func(*gorm.DB) *gorm.DB
+	if s.scopeResolver != nil {
+		params, err := s.scopeResolver.ResolveDataScope(ctx, "created_by", "dept_id")
+		if err != nil {
+			return nil, 0, err
+		}
+		scopes = append(scopes, datascope.Apply(params))
+	}
+	list, total, err := s.workOrderRepo.List(req.WorkOrderNo, req.ProductID, req.Status, req.Page, req.PageSize, scopes...)
 	if err != nil {
 		return nil, 0, err
 	}

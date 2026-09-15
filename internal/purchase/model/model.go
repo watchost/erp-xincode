@@ -16,6 +16,7 @@ type PurPurchaseOrder struct {
 	TotalAmount  decimal.Decimal `json:"total_amount"`
 	PlanArriveAt time.Time       `json:"plan_arrive_at"`
 	CreatedBy    int64           `json:"created_by"`
+	DeptID       int64           `json:"dept_id"`
 	CreatedAt    time.Time       `json:"created_at"`
 	ApprovedAt   time.Time       `json:"approved_at"`
 	ApprovedBy   int64           `json:"approved_by"`

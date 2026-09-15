@@ -15,12 +15,14 @@ import (
 // Claims 是自有的 JWT 声明，包含租户、角色、权限以及一次性 jti。
 // P0 整改：之前只有 user_id/username，无法支撑权限校验与登出黑名单。
 type Claims struct {
-	UserID   int64    `json:"user_id"`
-	Username string   `json:"username"`
-	TenantID int64    `json:"tenant_id"`
-	Roles    []string `json:"roles,omitempty"`
-	Perms    []string `json:"perms,omitempty"`
-	JTI      string   `json:"jti"`
+	UserID    int64    `json:"user_id"`
+	Username  string   `json:"username"`
+	TenantID  int64    `json:"tenant_id"`
+	DeptID    int64    `json:"dept_id,omitempty"`
+	DataScope int      `json:"data_scope,omitempty"` // 登录时按角色合并后的最宽数据权限档（1~5）
+	Roles     []string `json:"roles,omitempty"`
+	Perms     []string `json:"perms,omitempty"`
+	JTI       string   `json:"jti"`
 	jwt.RegisteredClaims
 }
 

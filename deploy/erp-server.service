@@ -1,0 +1,28 @@
+[Unit]
+Description=ERP System API Server
+Documentation=file:///opt/erp-xincode/docs/README.md
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 本机裸机部署沿用 root；生产环境建议改为专用非特权用户（User=erpapp）并调整目录属主。
+User=root
+WorkingDirectory=/opt/erp-xincode
+ExecStart=/opt/erp-xincode/bin/server
+# 可选密钥覆盖文件（.env 已在 .gitignore）。不存在时不阻断启动（前缀 '-'）。
+# 当前开发部署可缺省：使用 configs/config.yaml 与代码内开发默认值。
+# 生产环境必须在 .env 中提供强随机 JWT_SECRET 与真实 DB_PASSWORD。
+EnvironmentFile=-/opt/erp-xincode/.env
+Restart=always
+RestartSec=3
+# 服务端已实现 SIGTERM 优雅关闭（排空在途请求）
+KillSignal=SIGTERM
+TimeoutStopSec=30
+LimitNOFILE=65535
+# 日志走 journald：journalctl -u erp-server -f
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -83,15 +83,22 @@ func (h *IAMHandler) GetUserInfo(c *gin.Context) {
 		response.Fail(c, err)
 		return
 	}
-	response.Success(c, dto.UserVO{
-		ID:        user.ID,
-		Username:  user.Username,
-		RealName:  user.RealName,
-		Phone:     user.Phone,
-		Status:    user.Status,
-		TenantID:  user.TenantID,
-		CreatedAt: user.CreatedAt.Format("2006-01-02 15:04:05"),
-	})
+	vo := dto.UserVO{
+		ID:            user.ID,
+		Username:      user.Username,
+		RealName:      user.RealName,
+		Phone:         user.Phone,
+		Email:         user.Email,
+		Status:        user.Status,
+		TenantID:      user.TenantID,
+		DeptID:        user.DeptID,
+		MustChangePwd: user.MustChangePwd,
+		CreatedAt:     user.CreatedAt.Format("2006-01-02 15:04:05"),
+	}
+	if user.LastLoginAt != nil {
+		vo.LastLoginAt = user.LastLoginAt.Format("2006-01-02 15:04:05")
+	}
+	response.Success(c, vo)
 }
 
 func (h *IAMHandler) GetPermissions(c *gin.Context) {

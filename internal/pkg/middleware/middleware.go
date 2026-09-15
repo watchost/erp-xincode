@@ -20,12 +20,14 @@ import (
 
 // Context keys for gin.Context store.
 const (
-	CtxUserID   = "user_id"
-	CtxUsername = "username"
-	CtxTenantID = "tenant_id"
-	CtxRoles    = "roles"
-	CtxPerms    = "perms"
-	CtxJTI      = "jti"
+	CtxUserID    = "user_id"
+	CtxUsername  = "username"
+	CtxTenantID  = "tenant_id"
+	CtxRoles     = "roles"
+	CtxPerms     = "perms"
+	CtxJTI       = "jti"
+	CtxDeptID    = "dept_id"
+	CtxDataScope = "data_scope"
 )
 
 // 超级管理员拥有的角色/权限通配符，拥有该角色即跳过权限校验。
@@ -103,9 +105,9 @@ func Timeout(timeout time.Duration) gin.HandlerFunc {
 	}
 }
 
-// BlacklistChecker 在每次请求时判断某个 jti 是否已被登出拉黑。
-// 由 IAM service 实现（查 Redis）；为 nil 时不做黑名单校验。
-type BlacklistChecker func(ctx context.Context, jti string) bool
+// BlacklistChecker 在每次请求时判断 claims 是否仍然有效：
+// jti 登出黑名单 + 改密时间戳双重判定。由 IAM service 实现（查 Redis）；为 nil 时不校验。
+type BlacklistChecker func(ctx context.Context, claims *auth.Claims) bool
 
 // JWTAuth 真正校验 Bearer token 并把用户上下文写入 gin.Context。
 // P0 之前的实现只判断 header 非空即放行，属于任意伪造可通过的严重漏洞。
@@ -129,8 +131,8 @@ func JWTAuth(secret string, checker BlacklistChecker) gin.HandlerFunc {
 			return
 		}
 
-		// 登出黑名单：已登出的 token 即使未过期也一律拒绝。
-		if checker != nil && claims.JTI != "" && checker(c.Request.Context(), claims.JTI) {
+		// jti 黑名单 / 改密失效：无效 claims 即使 token 未过期也一律拒绝。
+		if checker != nil && !checker(c.Request.Context(), claims) {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, response.Err(10003, "登录已失效，请重新登录"))
 			return
 		}
@@ -141,13 +143,17 @@ func JWTAuth(secret string, checker BlacklistChecker) gin.HandlerFunc {
 		c.Set(CtxRoles, claims.Roles)
 		c.Set(CtxPerms, claims.Perms)
 		c.Set(CtxJTI, claims.JTI)
+		c.Set(CtxDeptID, claims.DeptID)
+		c.Set(CtxDataScope, claims.DataScope)
 
-		// 同时写入标准 context，供 service 层读取（如 created_by、审计日志）。
+		// 同时写入标准 context，供 service 层读取（如 created_by、数据权限、审计日志）。
 		ctx := c.Request.Context()
 		ctx = auth.WithUserID(ctx, claims.UserID)
 		ctx = auth.WithUsername(ctx, claims.Username)
 		ctx = auth.WithTenantID(ctx, claims.TenantID)
 		ctx = auth.WithJTI(ctx, claims.JTI)
+		ctx = auth.WithDeptID(ctx, claims.DeptID)
+		ctx = auth.WithDataScope(ctx, claims.DataScope)
 		c.Request = c.Request.WithContext(ctx)
 
 		c.Next()

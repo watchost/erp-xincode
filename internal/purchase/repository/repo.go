@@ -14,7 +14,7 @@ type PurchaseOrderRepository interface {
 	Create(tx *gorm.DB, order *model.PurPurchaseOrder) error
 	CreateItems(tx *gorm.DB, items []model.PurPurchaseOrderItem) error
 	FindByOrderNo(orderNo string) (*model.PurPurchaseOrder, error)
-	List(orderNo string, supplierID int64, status int, page, pageSize int) ([]model.PurPurchaseOrder, int64, error)
+	List(orderNo string, supplierID int64, status int, page, pageSize int, scopes ...func(*gorm.DB) *gorm.DB) ([]model.PurPurchaseOrder, int64, error)
 	FindItems(orderID int64) ([]model.PurPurchaseOrderItem, error)
 
 	// 事务内方法：供 InboundScan 在同一事务里锁定订单/明细。
@@ -71,10 +71,10 @@ func (r *purchaseOrderRepo) FindItemForUpdate(tx *gorm.DB, itemID int64) (*model
 	return &item, nil
 }
 
-func (r *purchaseOrderRepo) List(orderNo string, supplierID int64, status int, page, pageSize int) ([]model.PurPurchaseOrder, int64, error) {
+func (r *purchaseOrderRepo) List(orderNo string, supplierID int64, status int, page, pageSize int, scopes ...func(*gorm.DB) *gorm.DB) ([]model.PurPurchaseOrder, int64, error) {
 	var list []model.PurPurchaseOrder
 	var total int64
-	query := r.db.Model(&model.PurPurchaseOrder{})
+	query := r.db.Model(&model.PurPurchaseOrder{}).Scopes(scopes...)
 	if orderNo != "" {
 		query = query.Where("order_no LIKE ?", "%"+orderNo+"%")
 	}

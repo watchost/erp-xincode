@@ -18,6 +18,7 @@ type ProWorkOrder struct {
 	PlanStartAt   time.Time       `json:"plan_start_at"`
 	PlanEndAt     time.Time       `json:"plan_end_at"`
 	CreatedBy     int64           `json:"created_by"`
+	DeptID        int64           `json:"dept_id"`
 	CreatedAt     time.Time       `json:"created_at"`
 	ActualStartAt time.Time       `json:"actual_start_at"`
 	ActualEndAt   time.Time       `json:"actual_end_at"`

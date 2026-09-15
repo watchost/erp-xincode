@@ -13,6 +13,10 @@ const (
 	ctxKeyRoles
 	ctxKeyPerms
 	ctxKeyJTI
+	ctxKeyDeptID
+	ctxKeyDataScope
+	ctxKeyClientIP
+	ctxKeyUserAgent
 )
 
 // WithUserID 把 user_id 注入 context，供 service 层读取（替代之前硬编码 created_by=1）。
@@ -55,6 +59,51 @@ func WithJTI(ctx context.Context, jti string) context.Context {
 
 func JTIFromContext(ctx context.Context) string {
 	if v, ok := ctx.Value(ctxKeyJTI).(string); ok {
+		return v
+	}
+	return ""
+}
+
+func WithDeptID(ctx context.Context, deptID int64) context.Context {
+	return context.WithValue(ctx, ctxKeyDeptID, deptID)
+}
+
+func DeptIDFromContext(ctx context.Context) int64 {
+	if v, ok := ctx.Value(ctxKeyDeptID).(int64); ok {
+		return v
+	}
+	return 0
+}
+
+func WithDataScope(ctx context.Context, scope int) context.Context {
+	return context.WithValue(ctx, ctxKeyDataScope, scope)
+}
+
+func DataScopeFromContext(ctx context.Context) int {
+	if v, ok := ctx.Value(ctxKeyDataScope).(int); ok {
+		return v
+	}
+	return 0
+}
+
+// WithClientIP / WithUserAgent 由 RequestMeta 中间件注入，供登录审计等场景使用。
+func WithClientIP(ctx context.Context, ip string) context.Context {
+	return context.WithValue(ctx, ctxKeyClientIP, ip)
+}
+
+func ClientIPFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(ctxKeyClientIP).(string); ok {
+		return v
+	}
+	return ""
+}
+
+func WithUserAgent(ctx context.Context, ua string) context.Context {
+	return context.WithValue(ctx, ctxKeyUserAgent, ua)
+}
+
+func UserAgentFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(ctxKeyUserAgent).(string); ok {
 		return v
 	}
 	return ""

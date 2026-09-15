@@ -28,6 +28,7 @@ import (
 	"erp-system/internal/routes"
 
 	iamHandler "erp-system/internal/iam/handler"
+	iamModel "erp-system/internal/iam/model"
 	iamRepository "erp-system/internal/iam/repository"
 	iamService "erp-system/internal/iam/service"
 
@@ -109,7 +110,9 @@ func main() {
 	iamRoleRepo := iamRepository.NewRoleRepository(dbConn)
 	iamPermRepo := iamRepository.NewPermissionRepository(dbConn)
 	iamUserRoleRepo := iamRepository.NewUserRoleRepository(dbConn)
+	iamDeptRepo := iamRepository.NewDepartmentRepository(dbConn)
 	iamAuditLogRepo := iamRepository.NewAuditLogRepository(dbConn)
+	iamAttemptRepo := iamRepository.NewLoginAttemptRepository(dbConn)
 
 	jwtSecret := viper.GetString("jwt.secret")
 	if jwtSecret == "" || len(jwtSecret) < 16 {
@@ -126,7 +129,8 @@ func main() {
 
 	iamSvc := iamService.NewIAMService(
 		dbConn, txManager,
-		iamUserRepo, iamRoleRepo, iamPermRepo, iamUserRoleRepo, iamAuditLogRepo,
+		iamUserRepo, iamRoleRepo, iamPermRepo, iamUserRoleRepo,
+		iamDeptRepo, iamAuditLogRepo, iamAttemptRepo,
 		jwtSecret, accessExpire, refreshExpire, rdb,
 	)
 	iamH := iamHandler.NewIAMHandler(iamSvc, accessExpire)
@@ -176,6 +180,8 @@ func main() {
 		warehouseSvc, financeSvc, numberGen, idempGuard,
 	)
 	purchaseH := purchaseHandler.NewPurchaseHandler(purchaseSvc)
+	// 采购单/工单列表套用 IAM 5 档数据权限；单据 dept_id 创建时取自 claims。
+	purchaseSvc.SetDataScopeResolver(iamSvc)
 
 	// 生产模块
 	productionWorkOrderRepo := productionRepository.NewWorkOrderRepository(dbConn)
@@ -187,6 +193,7 @@ func main() {
 		warehouseSvc, financeSvc, numberGen, idempGuard,
 	)
 	productionH := productionHandler.NewProductionHandler(productionSvc)
+	productionSvc.SetDataScopeResolver(iamSvc)
 
 	// LLM 网关（仪表盘智能分析与 LLM 会话共用；未配置 api_key 时仪表盘回退为本地数据摘要）
 	llmGateway := gateway.NewQwenGateway(viper.GetString("llm.api_key"), viper.GetString("llm.model"))
@@ -221,7 +228,7 @@ func main() {
 		gin.SetMode(mode)
 	}
 	r := gin.New()
-	r.Use(gin.Logger(), middleware.Recovery(), middleware.TraceID())
+	r.Use(gin.Logger(), middleware.Recovery(), middleware.TraceID(), middleware.RequestMeta())
 	if origins := viper.GetStringSlice("cors.allow_origins"); len(origins) > 0 {
 		r.Use(middleware.CORS(origins))
 	}
@@ -264,9 +271,30 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"status": "ready", "checks": checks})
 	})
 
+	// 审计落库适配：middleware.AuditEntry → iam model（接口定义在 middleware 包，避免反向依赖）。
+	auditSink := middleware.AuditSinkFunc(func(ctx context.Context, e middleware.AuditEntry) {
+		entry := &iamModel.SysAuditLog{
+			UserID:     e.UserID,
+			TenantID:   e.TenantID,
+			Module:     e.Module,
+			Action:     e.Action,
+			IP:         e.IP,
+			UserAgent:  e.UserAgent,
+			Status:     e.Status,
+			DurationMs: e.DurationMs,
+			TraceID:    e.TraceID,
+			ReqParam:   iamModel.JSON(e.ReqParam),
+		}
+		if err := iamAuditLogRepo.Create(entry); err != nil {
+			logger.Log(ctx).Warn("write audit log failed", "error", err)
+		}
+	})
+
 	routes.RegisterRoutes(r, routes.Deps{
 		JWTSecret:    jwtSecret,
-		JWTBlacklist: iamSvc.IsBlacklisted,
+		JWTBlacklist: iamSvc.CheckClaims,
+		ForceChange:  iamSvc.MustChangePassword,
+		Audit:        middleware.Audit(auditSink),
 		LoginLimit:   middleware.LoginRateLimit(rdb, 10, time.Minute),
 		IAM:          iamH,
 		MDM:          mdmH,
