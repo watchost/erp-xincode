@@ -6,11 +6,13 @@ import (
 	"context"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 
 	mdmRepo "erp-system/internal/mdm/repository"
 	"erp-system/internal/pkg/bizno"
 	"erp-system/internal/pkg/db"
+	"erp-system/internal/pkg/decimalx"
 	"erp-system/internal/pkg/errors"
 	"erp-system/internal/pkg/idemp"
 	"erp-system/internal/warehouse/dto"
@@ -196,23 +198,29 @@ func (s *WarehouseService) ApplyInboundTx(ctx context.Context, tx *gorm.DB, in d
 		return dto.MoveResult{}, err
 	}
 
+	// 数量按 NUMERIC(18,3) 落库标度归整；均价按 NUMERIC(18,4)。
+	inQty := decimalx.Qty(in.Qty)
 	if inv == nil {
 		inv = &warehouseModel.InvInventory{
 			MaterialID:   in.MaterialID,
 			WarehouseID:  in.WarehouseID,
 			LocationID:   in.LocationID,
-			Qty:          in.Qty,
-			AvailableQty: in.Qty,
-			AvgCost:      in.UnitCost,
+			Qty:          inQty,
+			AvailableQty: inQty,
+			AvgCost:      decimalx.Cost(in.UnitCost),
 			UpdatedAt:    time.Now(),
 		}
 	} else {
 		oldQty, oldAvg := inv.Qty, inv.AvgCost
-		if in.UnitCost > 0 {
-			inv.AvgCost = (oldAvg*oldQty + in.UnitCost*in.Qty) / (oldQty + in.Qty)
+		if in.UnitCost.IsPositive() {
+			// new_avg = (old_avg*old_qty + unit_cost*in_qty) / (old_qty + in_qty)
+			// 除不尽时 DivRound 到 8 位保护精度，再按成本列 4 位归整。
+			num := oldAvg.Mul(oldQty).Add(in.UnitCost.Mul(inQty))
+			den := oldQty.Add(inQty)
+			inv.AvgCost = decimalx.Cost(num.DivRound(den, 8))
 		}
-		inv.Qty = oldQty + in.Qty
-		inv.AvailableQty = inv.AvailableQty + in.Qty
+		inv.Qty = oldQty.Add(inQty)
+		inv.AvailableQty = inv.AvailableQty.Add(inQty)
 		inv.UpdatedAt = time.Now()
 	}
 
@@ -220,16 +228,17 @@ func (s *WarehouseService) ApplyInboundTx(ctx context.Context, tx *gorm.DB, in d
 		return dto.MoveResult{}, err
 	}
 
-	costAmount := 0.0
-	if in.UnitCost > 0 {
-		costAmount = in.UnitCost * in.Qty
+	// 单价为 0（来源未知成本）的入库不产生金额，保持原均价，台账金额记 0。
+	costAmount := decimal.Zero
+	if in.UnitCost.IsPositive() {
+		costAmount = decimalx.Money(in.UnitCost.Mul(inQty))
 	}
 	if err := s.ledgerRepo.Append(tx, &warehouseModel.InvStockLedger{
 		MaterialID:  in.MaterialID,
 		WarehouseID: in.WarehouseID,
 		BizType:     in.BizType,
 		BizNo:       in.BizNo,
-		ChangeQty:   in.Qty,
+		ChangeQty:   inQty,
 		AfterQty:    inv.Qty,
 		CostAmount:  costAmount,
 	}); err != nil {
@@ -249,26 +258,27 @@ func (s *WarehouseService) ApplyOutboundTx(ctx context.Context, tx *gorm.DB, in 
 		}
 		return dto.MoveResult{}, err
 	}
-	if inv.AvailableQty < in.Qty || inv.Qty < in.Qty {
+	outQty := decimalx.Qty(in.Qty)
+	if inv.AvailableQty.Cmp(outQty) < 0 || inv.Qty.Cmp(outQty) < 0 {
 		return dto.MoveResult{}, errors.New(30001, 409, "库存不足")
 	}
 
 	oldAvg := inv.AvgCost
-	inv.Qty -= in.Qty
-	inv.AvailableQty -= in.Qty
+	inv.Qty = inv.Qty.Sub(outQty)
+	inv.AvailableQty = inv.AvailableQty.Sub(outQty)
 	inv.UpdatedAt = time.Now()
 
 	if err := s.invRepo.Upsert(tx, inv); err != nil {
 		return dto.MoveResult{}, err
 	}
 
-	costAmount := oldAvg * in.Qty
+	costAmount := decimalx.Money(oldAvg.Mul(outQty))
 	if err := s.ledgerRepo.Append(tx, &warehouseModel.InvStockLedger{
 		MaterialID:  in.MaterialID,
 		WarehouseID: in.WarehouseID,
 		BizType:     in.BizType,
 		BizNo:       in.BizNo,
-		ChangeQty:   -in.Qty,
+		ChangeQty:   outQty.Neg(),
 		AfterQty:    inv.Qty,
 		CostAmount:  costAmount,
 	}); err != nil {
@@ -330,7 +340,7 @@ func (s *WarehouseService) ListInventory(ctx context.Context, req dto.InventoryQ
 			Qty:           inv.Qty,
 			AvailableQty:  inv.AvailableQty,
 			AvgCost:       inv.AvgCost,
-			TotalValue:    inv.Qty * inv.AvgCost,
+			TotalValue:    decimalx.Money(inv.Qty.Mul(inv.AvgCost)),
 		})
 	}
 	return vos, total, nil
@@ -358,7 +368,7 @@ func (s *WarehouseService) GetStockAlerts(ctx context.Context) ([]dto.StockAlert
 			warehouseName = w.Name
 		}
 		level := "low"
-		if inv.AvailableQty < 5 {
+		if inv.AvailableQty.Cmp(decimal.NewFromInt(5)) < 0 {
 			level = "high"
 		}
 		vos = append(vos, dto.StockAlertVO{
@@ -367,7 +377,7 @@ func (s *WarehouseService) GetStockAlerts(ctx context.Context) ([]dto.StockAlert
 			MaterialName:  materialName,
 			WarehouseName: warehouseName,
 			CurrentQty:    inv.AvailableQty,
-			MinQty:        10,
+			MinQty:        decimal.NewFromInt(10),
 			Level:         level,
 		})
 	}

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"erp-system/internal/dashboard/dto"
 	"erp-system/internal/llm/gateway"
 	"erp-system/internal/pkg/db"
@@ -75,9 +77,9 @@ func (s *DashboardService) GetStockAlerts(ctx context.Context) ([]dto.StockAlert
 		MaterialCode  string
 		MaterialName  string
 		WarehouseName string
-		Qty           float64
-		AvailableQty  float64
-		MinStock      *float64
+		Qty           decimal.Decimal
+		AvailableQty  decimal.Decimal
+		MinStock      *decimal.Decimal
 	}
 	err := s.alertBaseQuery().
 		Select("m.material_code AS material_code, m.name AS material_name, w.name AS warehouse_name, " +
@@ -91,13 +93,13 @@ func (s *DashboardService) GetStockAlerts(ctx context.Context) ([]dto.StockAlert
 
 	alerts := make([]dto.StockAlertVO, 0, len(rows))
 	for _, r := range rows {
-		threshold := float64(defaultAlertThreshold)
-		if r.MinStock != nil && *r.MinStock > 0 {
+		threshold := decimal.NewFromInt(defaultAlertThreshold)
+		if r.MinStock != nil && r.MinStock.IsPositive() {
 			threshold = *r.MinStock
 		}
 		level := "warning"
 		// 可用量不足阈值一半视为紧急
-		if r.AvailableQty < threshold/2 {
+		if r.AvailableQty.Cmp(threshold.DivRound(decimal.NewFromInt(2), 3)) < 0 {
 			level = "danger"
 		}
 		alerts = append(alerts, dto.StockAlertVO{
@@ -106,7 +108,7 @@ func (s *DashboardService) GetStockAlerts(ctx context.Context) ([]dto.StockAlert
 			WarehouseName: r.WarehouseName,
 			CurrentQty:    r.Qty,
 			AvailableQty:  r.AvailableQty,
-			MinStock:      float64(threshold),
+			MinStock:      threshold,
 			Level:         level,
 		})
 	}
@@ -134,13 +136,13 @@ func (s *DashboardService) GetRecentOrders(ctx context.Context) ([]dto.RecentOrd
 	var rows []struct {
 		OrderNo      string
 		SupplierName string
-		TotalAmount  float64
+		TotalAmount  decimal.Decimal
 		Status       int
 		CreatedAt    time.Time
 	}
 	err := s.db.Table("pur_purchase_order AS o").
 		Joins("LEFT JOIN mdm_supplier AS sup ON sup.id = o.supplier_id AND sup.deleted_at IS NULL").
-		Select("o.order_no AS order_no, COALESCE(sup.name, '') AS supplier_name, "+
+		Select("o.order_no AS order_no, COALESCE(sup.name, '') AS supplier_name, " +
 			"o.total_amount AS total_amount, o.status AS status, o.created_at AS created_at").
 		Order("o.created_at DESC").
 		Limit(10).
@@ -192,8 +194,8 @@ func (s *DashboardService) GetLLMAnalysis(ctx context.Context, question string) 
 func (s *DashboardService) buildDataContext(ov *dto.OverviewVO, alerts []dto.StockAlertVO, orders []dto.RecentOrderVO) string {
 	var b strings.Builder
 	b.WriteString("【当前经营数据】\n")
-	b.WriteString(fmt.Sprintf("- 库存总量: %.0f，库存总值: ¥%.2f\n", ov.TotalInventory, ov.InventoryValue))
-	b.WriteString(fmt.Sprintf("- 今日入库: %.0f，今日出库: %.0f\n", ov.TodayInboundQty, ov.TodayOutboundQty))
+	b.WriteString(fmt.Sprintf("- 库存总量: %s，库存总值: ¥%s\n", ov.TotalInventory.StringFixed(0), ov.InventoryValue.StringFixed(2)))
+	b.WriteString(fmt.Sprintf("- 今日入库: %s，今日出库: %s\n", ov.TodayInboundQty.StringFixed(0), ov.TodayOutboundQty.StringFixed(0)))
 	b.WriteString(fmt.Sprintf("- 待审批采购订单: %d，进行中工单: %d，库存预警: %d\n",
 		ov.PendingPurchaseOrders, ov.InProgressWorkOrders, ov.StockAlertCount))
 
@@ -207,7 +209,7 @@ func (s *DashboardService) buildDataContext(ov *dto.OverviewVO, alerts []dto.Sto
 			if i > 0 {
 				b.WriteString("；")
 			}
-			b.WriteString(fmt.Sprintf("%s(%s) 可用%.0f", a.MaterialName, a.WarehouseName, a.AvailableQty))
+			b.WriteString(fmt.Sprintf("%s(%s) 可用%s", a.MaterialName, a.WarehouseName, a.AvailableQty.StringFixed(0)))
 		}
 		b.WriteString("\n")
 	}
@@ -221,7 +223,7 @@ func (s *DashboardService) buildDataContext(ov *dto.OverviewVO, alerts []dto.Sto
 			if i > 0 {
 				b.WriteString("；")
 			}
-			b.WriteString(fmt.Sprintf("%s %s ¥%.2f(%s)", o.OrderNo, o.SupplierName, o.TotalAmount, o.StatusDesc))
+			b.WriteString(fmt.Sprintf("%s %s ¥%s(%s)", o.OrderNo, o.SupplierName, o.TotalAmount.StringFixed(2), o.StatusDesc))
 		}
 		b.WriteString("\n")
 	}
@@ -232,8 +234,8 @@ func (s *DashboardService) buildDataContext(ov *dto.OverviewVO, alerts []dto.Sto
 func (s *DashboardService) fallbackAnswer(question string, ov *dto.OverviewVO, alerts []dto.StockAlertVO) string {
 	var b strings.Builder
 	b.WriteString("（未连接外部 AI，以下为系统基于实时数据的摘要）\n")
-	b.WriteString(fmt.Sprintf("当前库存总值约 ¥%.2f，库存总量 %.0f；今日入库 %.0f、出库 %.0f。",
-		ov.InventoryValue, ov.TotalInventory, ov.TodayInboundQty, ov.TodayOutboundQty))
+	b.WriteString(fmt.Sprintf("当前库存总值约 ¥%s，库存总量 %s；今日入库 %s、出库 %s。",
+		ov.InventoryValue.StringFixed(2), ov.TotalInventory.StringFixed(0), ov.TodayInboundQty.StringFixed(0), ov.TodayOutboundQty.StringFixed(0)))
 	b.WriteString(fmt.Sprintf("待审批采购订单 %d 张，进行中工单 %d 张。", ov.PendingPurchaseOrders, ov.InProgressWorkOrders))
 
 	if len(alerts) > 0 {
@@ -243,7 +245,7 @@ func (s *DashboardService) fallbackAnswer(question string, ov *dto.OverviewVO, a
 				b.WriteString("等。")
 				break
 			}
-			b.WriteString(fmt.Sprintf("\n· %s（%s）可用 %.0f，低于安全库存 %.0f；", a.MaterialName, a.WarehouseName, a.AvailableQty, a.MinStock))
+			b.WriteString(fmt.Sprintf("\n· %s（%s）可用 %s，低于安全库存 %s；", a.MaterialName, a.WarehouseName, a.AvailableQty.StringFixed(0), a.MinStock.StringFixed(0)))
 		}
 		b.WriteString("\n建议尽快对上述物料下达采购或调整生产排程。")
 	} else {

@@ -3,6 +3,7 @@
 package repository
 
 import (
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -20,7 +21,7 @@ type WorkOrderRepository interface {
 	FindByWorkOrderNoForUpdate(tx *gorm.DB, workOrderNo string) (*model.ProWorkOrder, error)
 	FindMaterialForUpdate(tx *gorm.DB, id int64) (*model.ProWorkOrderMaterial, error)
 
-	UpdateMaterialIssuedQty(tx *gorm.DB, materialID int64, qty float64) error
+	UpdateMaterialIssuedQty(tx *gorm.DB, materialID int64, qty decimal.Decimal) error
 	UpdateWorkOrderStatus(tx *gorm.DB, workOrderID int64, status int, fields map[string]interface{}) error
 }
 
@@ -111,7 +112,7 @@ func (r *workOrderRepo) FindMaterials(workOrderID int64) ([]model.ProWorkOrderMa
 	return materials, nil
 }
 
-func (r *workOrderRepo) UpdateMaterialIssuedQty(tx *gorm.DB, materialID int64, qty float64) error {
+func (r *workOrderRepo) UpdateMaterialIssuedQty(tx *gorm.DB, materialID int64, qty decimal.Decimal) error {
 	return tx.Model(&model.ProWorkOrderMaterial{}).
 		Where("id = ?", materialID).
 		Update("issued_qty", gorm.Expr("issued_qty + ?", qty)).Error

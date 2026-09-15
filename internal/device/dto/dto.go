@@ -2,6 +2,8 @@
 
 package dto
 
+import "github.com/shopspring/decimal"
+
 type DeviceRegisterReq struct {
 	DeviceCode string `json:"device_code" binding:"required"`
 	Type       int    `json:"type" binding:"required"`
@@ -15,12 +17,12 @@ type DeviceHeartbeatReq struct {
 }
 
 type DeviceScanEvent struct {
-	DeviceCode   string  `json:"device_code"`
-	EventType    string  `json:"event_type"`
-	MaterialCode string  `json:"material_code"`
-	Qty          float64 `json:"qty"`
-	LocationCode string  `json:"location_code"`
-	Timestamp    int64   `json:"timestamp"`
+	DeviceCode   string          `json:"device_code"`
+	EventType    string          `json:"event_type"`
+	MaterialCode string          `json:"material_code"`
+	Qty          decimal.Decimal `json:"qty"`
+	LocationCode string          `json:"location_code"`
+	Timestamp    int64           `json:"timestamp"`
 }
 
 type DeviceVO struct {

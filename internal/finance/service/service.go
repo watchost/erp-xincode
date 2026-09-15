@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"erp-system/internal/finance/dto"
 	"erp-system/internal/finance/model"
 	"erp-system/internal/finance/repository"
 	mdmRepo "erp-system/internal/mdm/repository"
 	"erp-system/internal/pkg/bizno"
 	"erp-system/internal/pkg/db"
+	"erp-system/internal/pkg/decimalx"
 	"erp-system/internal/pkg/errors"
 	"gorm.io/gorm"
 )
@@ -110,7 +113,7 @@ func (s *FinanceService) GetCostSummary(ctx context.Context, productID int64, st
 			MaterialCost: row.MaterialCost,
 			LaborCost:    row.LaborCost,
 			OverheadCost: row.OverheadCost,
-			TotalCost:    row.MaterialCost + row.LaborCost + row.OverheadCost,
+			TotalCost:    row.MaterialCost.Add(row.LaborCost).Add(row.OverheadCost),
 		})
 	}
 
@@ -170,30 +173,31 @@ func (s *FinanceService) GetFinancialReport(ctx context.Context, period string) 
 	if err != nil {
 		return nil, err
 	}
-	totalAssets := inventoryAssets + wipAssets
+	totalAssets := inventoryAssets.Add(wipAssets)
 
 	liabilityNet, err := s.accountEntryRepo.SumBalance("2", nil, &periodEnd)
 	if err != nil {
 		return nil, err
 	}
-	totalLiabilities := -liabilityNet // 负债为贷方余额
+	totalLiabilities := liabilityNet.Neg() // 负债为贷方余额
 
 	// 利润表（本月期间发生额）
 	revenueNet, err := s.accountEntryRepo.SumBalance("60", &periodStart, &periodEnd)
 	if err != nil {
 		return nil, err
 	}
-	totalRevenue := -revenueNet // 收入为贷方发生
+	totalRevenue := revenueNet.Neg() // 收入为贷方发生
 
 	totalCost, err := s.accountEntryRepo.SumBalance("64", &periodStart, &periodEnd)
 	if err != nil {
 		return nil, err
 	}
 
-	grossProfit := totalRevenue - totalCost
-	grossMargin := 0.0
-	if totalRevenue > 0 {
-		grossMargin = (grossProfit / totalRevenue) * 100
+	grossProfit := totalRevenue.Sub(totalCost)
+	grossMargin := decimal.Zero
+	if totalRevenue.IsPositive() {
+		// 中间比率保留 6 位小数，×100 后按百分数 2 位归整。
+		grossMargin = grossProfit.DivRound(totalRevenue, 6).Mul(decimal.NewFromInt(100)).Round(decimalx.PlacesMoney)
 	}
 
 	return &dto.FinancialReportVO{
@@ -204,7 +208,7 @@ func (s *FinanceService) GetFinancialReport(ctx context.Context, period string) 
 		GrossMargin:      grossMargin,
 		TotalAssets:      totalAssets,
 		TotalLiabilities: totalLiabilities,
-		NetAssets:        totalAssets - totalLiabilities,
+		NetAssets:        totalAssets.Sub(totalLiabilities),
 	}, nil
 }
 
@@ -245,7 +249,7 @@ func (s *FinanceService) ListBudgets(ctx context.Context, budgetType string, yea
 			BudgetTypeName:  budgetTypeName,
 			Amount:          budget.Amount,
 			UsedAmount:      budget.UsedAmount,
-			RemainingAmount: budget.Amount - budget.UsedAmount,
+			RemainingAmount: budget.Amount.Sub(budget.UsedAmount),
 			Year:            budget.Year,
 			Month:           budget.Month,
 			Status:          budget.Status,
@@ -257,7 +261,7 @@ func (s *FinanceService) ListBudgets(ctx context.Context, budgetType string, yea
 	return vos, total, nil
 }
 
-func (s *FinanceService) CreateBudget(ctx context.Context, budgetType string, amount float64, year, month int) (*dto.BudgetVO, error) {
+func (s *FinanceService) CreateBudget(ctx context.Context, budgetType string, amount decimal.Decimal, year, month int) (*dto.BudgetVO, error) {
 	budgetNo := fmt.Sprintf("BG%v%04d%02d", time.Now().Unix(), year, month)
 
 	var budget model.FinBudget
@@ -272,11 +276,11 @@ func (s *FinanceService) CreateBudget(ctx context.Context, budgetType string, am
 		if count > 0 {
 			return errors.New(60011, 409, "本期该类型预算已存在，请勿重复创建")
 		}
+		// 落库前按金额标度归整（NUMERIC(18,2)）。
 		budget = model.FinBudget{
 			BudgetNo:   budgetNo,
 			BudgetType: budgetType,
-			Amount:     amount,
-			UsedAmount: 0,
+			Amount:     decimalx.Money(amount),
 			Year:       year,
 			Month:      month,
 			Status:     1,
@@ -295,7 +299,7 @@ func (s *FinanceService) CreateBudget(ctx context.Context, budgetType string, am
 		BudgetTypeName:  budgetTypeName(budget.BudgetType),
 		Amount:          budget.Amount,
 		UsedAmount:      budget.UsedAmount,
-		RemainingAmount: budget.Amount - budget.UsedAmount,
+		RemainingAmount: budget.Amount.Sub(budget.UsedAmount),
 		Year:            budget.Year,
 		Month:           budget.Month,
 		Status:          budget.Status,
@@ -321,8 +325,8 @@ func budgetTypeName(budgetType string) string {
 // ReserveBudgetTx 在调用方事务内原子占用本期（当前年月）指定类型的预算。
 // 本期未设置预算时不强制（返回 nil，视为不启用预算控制）；预算余额不足返回错误，
 // 由调用方随业务事务一并回滚。条件更新在 DB 层完成，并发审批不会超额占用。
-func (s *FinanceService) ReserveBudgetTx(ctx context.Context, tx *gorm.DB, budgetType string, amount float64) error {
-	if amount <= 0 {
+func (s *FinanceService) ReserveBudgetTx(ctx context.Context, tx *gorm.DB, budgetType string, amount decimal.Decimal) error {
+	if !amount.IsPositive() {
 		return nil
 	}
 	now := time.Now()
@@ -342,8 +346,8 @@ func (s *FinanceService) ReserveBudgetTx(ctx context.Context, tx *gorm.DB, budge
 // ReleaseBudgetTx 在调用方事务内释放本期（当前年月）指定类型预算已占用的金额。
 // 用于采购订单取消时回退审批时占用的预算。本期未设置预算时为空操作；
 // GREATEST 兜底保证占用不会被释放为负。失败随调用方事务一并回滚。
-func (s *FinanceService) ReleaseBudgetTx(ctx context.Context, tx *gorm.DB, budgetType string, amount float64) error {
-	if amount <= 0 {
+func (s *FinanceService) ReleaseBudgetTx(ctx context.Context, tx *gorm.DB, budgetType string, amount decimal.Decimal) error {
+	if !amount.IsPositive() {
 		return nil
 	}
 	now := time.Now()

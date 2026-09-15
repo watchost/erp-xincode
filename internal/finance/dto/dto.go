@@ -2,6 +2,8 @@
 
 package dto
 
+import "github.com/shopspring/decimal"
+
 type CostCardQuery struct {
 	ProductID int64  `form:"product_id" json:"product_id"`
 	CostType  string `form:"cost_type" json:"cost_type"`
@@ -12,26 +14,26 @@ type CostCardQuery struct {
 }
 
 type CostCardVO struct {
-	ID           int64   `json:"id"`
-	ProductID    int64   `json:"product_id"`
-	ProductCode  string  `json:"product_code"`
-	ProductName  string  `json:"product_name"`
-	CostType     string  `json:"cost_type"`
-	CostTypeName string  `json:"cost_type_name"`
-	Amount       float64 `json:"amount"`
-	CostDate     string  `json:"cost_date"`
-	SourceType   string  `json:"source_type"`
-	SourceID     int64   `json:"source_id"`
+	ID           int64           `json:"id"`
+	ProductID    int64           `json:"product_id"`
+	ProductCode  string          `json:"product_code"`
+	ProductName  string          `json:"product_name"`
+	CostType     string          `json:"cost_type"`
+	CostTypeName string          `json:"cost_type_name"`
+	Amount       decimal.Decimal `json:"amount"`
+	CostDate     string          `json:"cost_date"`
+	SourceType   string          `json:"source_type"`
+	SourceID     int64           `json:"source_id"`
 }
 
 type CostSummaryVO struct {
-	ProductID    int64   `json:"product_id"`
-	ProductCode  string  `json:"product_code"`
-	ProductName  string  `json:"product_name"`
-	MaterialCost float64 `json:"material_cost"`
-	LaborCost    float64 `json:"labor_cost"`
-	OverheadCost float64 `json:"overhead_cost"`
-	TotalCost    float64 `json:"total_cost"`
+	ProductID    int64           `json:"product_id"`
+	ProductCode  string          `json:"product_code"`
+	ProductName  string          `json:"product_name"`
+	MaterialCost decimal.Decimal `json:"material_cost"`
+	LaborCost    decimal.Decimal `json:"labor_cost"`
+	OverheadCost decimal.Decimal `json:"overhead_cost"`
+	TotalCost    decimal.Decimal `json:"total_cost"`
 }
 
 type AccountEntryQuery struct {
@@ -45,49 +47,49 @@ type AccountEntryQuery struct {
 }
 
 type AccountEntryVO struct {
-	ID           int64   `json:"id"`
-	EntryNo      string  `json:"entry_no"`
-	AccountCode  string  `json:"account_code"`
-	AccountName  string  `json:"account_name"`
-	DebitAmount  float64 `json:"debit_amount"`
-	CreditAmount float64 `json:"credit_amount"`
-	Balance      float64 `json:"balance"`
-	BizType      string  `json:"biz_type"`
-	BizNo        string  `json:"biz_no"`
-	Description  string  `json:"description"`
-	CreatedAt    string  `json:"created_at"`
+	ID           int64           `json:"id"`
+	EntryNo      string          `json:"entry_no"`
+	AccountCode  string          `json:"account_code"`
+	AccountName  string          `json:"account_name"`
+	DebitAmount  decimal.Decimal `json:"debit_amount"`
+	CreditAmount decimal.Decimal `json:"credit_amount"`
+	Balance      decimal.Decimal `json:"balance"`
+	BizType      string          `json:"biz_type"`
+	BizNo        string          `json:"biz_no"`
+	Description  string          `json:"description"`
+	CreatedAt    string          `json:"created_at"`
 }
 
 type FinancialReportVO struct {
-	Period           string  `json:"period"`
-	TotalRevenue     float64 `json:"total_revenue"`
-	TotalCost        float64 `json:"total_cost"`
-	GrossProfit      float64 `json:"gross_profit"`
-	GrossMargin      float64 `json:"gross_margin"`
-	TotalAssets      float64 `json:"total_assets"`
-	TotalLiabilities float64 `json:"total_liabilities"`
-	NetAssets        float64 `json:"net_assets"`
+	Period           string          `json:"period"`
+	TotalRevenue     decimal.Decimal `json:"total_revenue"`
+	TotalCost        decimal.Decimal `json:"total_cost"`
+	GrossProfit      decimal.Decimal `json:"gross_profit"`
+	GrossMargin      decimal.Decimal `json:"gross_margin"`
+	TotalAssets      decimal.Decimal `json:"total_assets"`
+	TotalLiabilities decimal.Decimal `json:"total_liabilities"`
+	NetAssets        decimal.Decimal `json:"net_assets"`
 }
 
 type BudgetVO struct {
-	ID              int64   `json:"id"`
-	BudgetNo        string  `json:"budget_no"`
-	BudgetType      string  `json:"budget_type"`
-	BudgetTypeName  string  `json:"budget_type_name"`
-	Amount          float64 `json:"amount"`
-	UsedAmount      float64 `json:"used_amount"`
-	RemainingAmount float64 `json:"remaining_amount"`
-	Year            int     `json:"year"`
-	Month           int     `json:"month"`
-	Status          int     `json:"status"`
-	StatusDesc      string  `json:"status_desc"`
-	CreatedAt       string  `json:"created_at"`
+	ID              int64           `json:"id"`
+	BudgetNo        string          `json:"budget_no"`
+	BudgetType      string          `json:"budget_type"`
+	BudgetTypeName  string          `json:"budget_type_name"`
+	Amount          decimal.Decimal `json:"amount"`
+	UsedAmount      decimal.Decimal `json:"used_amount"`
+	RemainingAmount decimal.Decimal `json:"remaining_amount"`
+	Year            int             `json:"year"`
+	Month           int             `json:"month"`
+	Status          int             `json:"status"`
+	StatusDesc      string          `json:"status_desc"`
+	CreatedAt       string          `json:"created_at"`
 }
 
 // CreateBudgetReq 创建预算。budget_type 限定在四类；同一类型+年月唯一。
 type CreateBudgetReq struct {
-	BudgetType string  `json:"budget_type" binding:"required,oneof=purchase production marketing admin"`
-	Amount     float64 `json:"amount" binding:"required,gt=0"`
-	Year       int     `json:"year" binding:"required,min=2000,max=2100"`
-	Month      int     `json:"month" binding:"required,min=1,max=12"`
+	BudgetType string          `json:"budget_type" binding:"required,oneof=purchase production marketing admin"`
+	Amount     decimal.Decimal `json:"amount" binding:"decgt=0"`
+	Year       int             `json:"year" binding:"required,min=2000,max=2100"`
+	Month      int             `json:"month" binding:"required,min=1,max=12"`
 }

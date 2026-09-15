@@ -5,12 +5,13 @@ package service
 import (
 	"context"
 	"fmt"
-	"math"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 
 	"erp-system/internal/finance/model"
+	"erp-system/internal/pkg/decimalx"
 	"erp-system/internal/pkg/errors"
 )
 
@@ -53,15 +54,15 @@ const (
 type PostingLine struct {
 	AccountCode string
 	AccountName string
-	Debit       float64
-	Credit      float64
+	Debit       decimal.Decimal
+	Credit      decimal.Decimal
 }
 
 // CostCardInput 描述一张成本卡（按产品/物料归集的成本）。
 type CostCardInput struct {
 	ProductID  int64
 	CostType   string
-	Amount     float64
+	Amount     decimal.Decimal
 	SourceType string
 	SourceID   int64
 }
@@ -88,36 +89,42 @@ func (s *FinanceService) PostTx(ctx context.Context, tx *gorm.DB, in PostingInpu
 		return errors.New(60001, 500, "记账凭证至少需要两条分录")
 	}
 
-	var debitSum, creditSum float64
-	for _, line := range in.Lines {
-		if line.Debit < 0 || line.Credit < 0 {
+	// 落库前唯一的金额归一关口：分录金额按金额列标度 NUMERIC(18,2) 归整，
+	// 后续校验与落库都使用归整后的值——避免按未归整值校验平衡、归整后反而失衡。
+	lines := make([]PostingLine, len(in.Lines))
+	var debitSum, creditSum decimal.Decimal
+	for i, line := range in.Lines {
+		line.Debit = decimalx.Money(line.Debit)
+		line.Credit = decimalx.Money(line.Credit)
+		lines[i] = line
+		if line.Debit.IsNegative() || line.Credit.IsNegative() {
 			return errors.New(60002, 500, "分录金额不能为负")
 		}
-		if (line.Debit > 0) == (line.Credit > 0) {
+		if line.Debit.IsPositive() == line.Credit.IsPositive() {
 			return errors.New(60003, 500, "每条分录必须且只能有一方金额（借或贷）")
 		}
-		debitSum += line.Debit
-		creditSum += line.Credit
+		debitSum = debitSum.Add(line.Debit)
+		creditSum = creditSum.Add(line.Credit)
 	}
-	// 浮点容差比较：借贷差额超过 1 分即视为不平衡。
-	if math.Abs(debitSum-creditSum) > 0.01 {
+	// 精确平衡：借/贷合计必须分毫不差（不再使用浮点容差）。
+	if !debitSum.Equal(creditSum) {
 		return errors.New(60004, 500, "记账凭证借贷不平衡，已拒绝过账")
 	}
-	if debitSum <= 0 {
+	if !debitSum.IsPositive() {
 		return errors.New(60005, 500, "记账凭证金额必须大于零")
 	}
 
 	// 一张凭证一个凭证号，每条分录行用「凭证号-行号」作为唯一 entry_no。
 	voucherNo := s.generateVoucherNo(ctx)
 	now := time.Now()
-	for i, line := range in.Lines {
+	for i, line := range lines {
 		entry := model.FinAccountEntry{
 			EntryNo:      fmt.Sprintf("%s-%02d", voucherNo, i+1),
 			AccountCode:  line.AccountCode,
 			AccountName:  line.AccountName,
 			DebitAmount:  line.Debit,
 			CreditAmount: line.Credit,
-			Balance:      line.Debit - line.Credit,
+			Balance:      line.Debit.Sub(line.Credit),
 			BizType:      in.BizType,
 			BizNo:        in.BizNo,
 			Description:  in.Description,
@@ -132,7 +139,7 @@ func (s *FinanceService) PostTx(ctx context.Context, tx *gorm.DB, in PostingInpu
 		cc := model.FinCostCard{
 			ProductID:  card.ProductID,
 			CostType:   card.CostType,
-			Amount:     card.Amount,
+			Amount:     decimalx.Cost(card.Amount), // fin_cost.amount NUMERIC(18,4)
 			CostDate:   now,
 			SourceType: card.SourceType,
 			SourceID:   card.SourceID,

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 
 	financeService "erp-system/internal/finance/service"
@@ -15,6 +16,7 @@ import (
 	"erp-system/internal/pkg/auth"
 	"erp-system/internal/pkg/bizno"
 	"erp-system/internal/pkg/db"
+	"erp-system/internal/pkg/decimalx"
 	"erp-system/internal/pkg/errors"
 	"erp-system/internal/pkg/idemp"
 	"erp-system/internal/production/dto"
@@ -107,6 +109,7 @@ func (s *ProductionService) CreateWorkOrder(ctx context.Context, req dto.CreateW
 	}
 
 	workOrderNo := s.numbers.Next(ctx, "WO")
+	planQty := decimalx.Qty(req.PlanQty) // 计划数量 NUMERIC(18,3)
 
 	var workOrder model.ProWorkOrder
 	workOrderMaterials := make([]model.ProWorkOrderMaterial, 0, len(bomItems))
@@ -115,8 +118,8 @@ func (s *ProductionService) CreateWorkOrder(ctx context.Context, req dto.CreateW
 		workOrder = model.ProWorkOrder{
 			WorkOrderNo: workOrderNo,
 			ProductID:   req.ProductID,
-			PlanQty:     req.PlanQty,
-			ProducedQty: 0,
+			PlanQty:     planQty,
+			ProducedQty: decimal.Zero,
 			Status:      WorkOrderStatusDraft,
 			CreatedBy:   auth.UserIDFromContext(ctx),
 		}
@@ -135,12 +138,14 @@ func (s *ProductionService) CreateWorkOrder(ctx context.Context, req dto.CreateW
 		}
 
 		for _, item := range bomItems {
-			planQty := item.Qty * req.PlanQty * (1 + item.ScrapRate)
+			// 物料需求 = BOM 单位用量 × 工单计划量 × (1 + 损耗率)，
+			// 结果按工单物料数量标度 NUMERIC(18,3) 归整。
+			need := decimalx.Qty(item.Qty.Mul(planQty).Mul(decimal.NewFromInt(1).Add(item.ScrapRate)))
 			workOrderMaterials = append(workOrderMaterials, model.ProWorkOrderMaterial{
 				WorkOrderID: workOrder.ID,
 				MaterialID:  item.MaterialID,
-				PlanQty:     planQty,
-				IssuedQty:   0,
+				PlanQty:     need,
+				IssuedQty:   decimal.Zero,
 				Unit:        item.Unit,
 			})
 		}
@@ -265,8 +270,8 @@ func (s *ProductionService) MaterialIssueScan(ctx context.Context, req dto.Mater
 	}
 
 	outboundNo := s.numbers.Next(ctx, "OB")
-	var afterQty float64
-	var remaining float64
+	var afterQty decimal.Decimal
+	var remaining decimal.Decimal
 
 	err = s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
 		order, err := s.workOrderRepo.FindByWorkOrderNoForUpdate(tx, req.WorkOrderNo)
@@ -297,7 +302,8 @@ func (s *ProductionService) MaterialIssueScan(ctx context.Context, req dto.Mater
 		if err != nil {
 			return err
 		}
-		if locked.IssuedQty+req.Qty > locked.PlanQty {
+		reqQty := decimalx.Qty(req.Qty)
+		if locked.IssuedQty.Add(reqQty).Cmp(locked.PlanQty) > 0 {
 			return errors.New(50006, 400, "领料数量超出计划数量")
 		}
 
@@ -306,7 +312,7 @@ func (s *ProductionService) MaterialIssueScan(ctx context.Context, req dto.Mater
 			MaterialID:  material.ID,
 			WarehouseID: warehouse.ID,
 			LocationID:  location.ID,
-			Qty:         req.Qty,
+			Qty:         reqQty,
 			BizType:     warehouseService.BizTypeProductionOutbound,
 			BizNo:       outboundNo,
 		})
@@ -314,9 +320,9 @@ func (s *ProductionService) MaterialIssueScan(ctx context.Context, req dto.Mater
 			return err
 		}
 		afterQty = moveRes.AfterQty
-		remaining = locked.PlanQty - locked.IssuedQty - req.Qty
+		remaining = locked.PlanQty.Sub(locked.IssuedQty).Sub(reqQty)
 
-		if err := s.workOrderRepo.UpdateMaterialIssuedQty(tx, locked.ID, req.Qty); err != nil {
+		if err := s.workOrderRepo.UpdateMaterialIssuedQty(tx, locked.ID, reqQty); err != nil {
 			return err
 		}
 
@@ -374,7 +380,7 @@ func (s *ProductionService) ProductionReceipt(ctx context.Context, req dto.Produ
 	}
 
 	receiptNo := s.numbers.Next(ctx, "PR")
-	var afterQty float64
+	var afterQty decimal.Decimal
 	var finalStatus int
 	completed := false
 
@@ -386,7 +392,9 @@ func (s *ProductionService) ProductionReceipt(ctx context.Context, req dto.Produ
 		if order.Status != WorkOrderStatusReleased && order.Status != WorkOrderStatusInProgress {
 			return errors.New(50004, 409, "工单未下达或已完工，无法入库")
 		}
-		if order.ProducedQty+req.Qty > order.PlanQty {
+		reqQty := decimalx.Qty(req.Qty)
+		reqCost := decimalx.Cost(req.UnitCost) // 单位成本 NUMERIC(18,4)
+		if order.ProducedQty.Add(reqQty).Cmp(order.PlanQty) > 0 {
 			return errors.New(50006, 400, "入库数量超出工单计划数量")
 		}
 
@@ -395,8 +403,8 @@ func (s *ProductionService) ProductionReceipt(ctx context.Context, req dto.Produ
 			MaterialID:  order.ProductID,
 			WarehouseID: warehouse.ID,
 			LocationID:  location.ID,
-			Qty:         req.Qty,
-			UnitCost:    req.UnitCost,
+			Qty:         reqQty,
+			UnitCost:    reqCost,
 			BizType:     warehouseService.BizTypeProductionInbound,
 			BizNo:       receiptNo,
 		})
@@ -410,8 +418,8 @@ func (s *ProductionService) ProductionReceipt(ctx context.Context, req dto.Produ
 			WorkOrderID: order.ID,
 			MaterialID:  order.ProductID,
 			WarehouseID: warehouse.ID,
-			Qty:         req.Qty,
-			UnitCost:    req.UnitCost,
+			Qty:         reqQty,
+			UnitCost:    reqCost,
 			Status:      1,
 			CreatedBy:   auth.UserIDFromContext(ctx),
 		}
@@ -433,11 +441,11 @@ func (s *ProductionService) ProductionReceipt(ctx context.Context, req dto.Produ
 		}
 
 		// 工单进度：累加 produced_qty；达计划数量则完工（记 actual_end_at），否则推进到生产中。
-		newProduced := order.ProducedQty + req.Qty
+		newProduced := order.ProducedQty.Add(reqQty)
 		fields := map[string]interface{}{
-			"produced_qty": gorm.Expr("produced_qty + ?", req.Qty),
+			"produced_qty": gorm.Expr("produced_qty + ?", reqQty),
 		}
-		if newProduced >= order.PlanQty {
+		if newProduced.Cmp(order.PlanQty) >= 0 {
 			fields["actual_end_at"] = time.Now()
 			finalStatus = WorkOrderStatusCompleted
 			completed = true

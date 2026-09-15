@@ -19,6 +19,7 @@ import (
 
 	"erp-system/internal/pkg/bizno"
 	"erp-system/internal/pkg/db"
+	"erp-system/internal/pkg/decimalx"
 	"erp-system/internal/pkg/idemp"
 	"erp-system/internal/pkg/logger"
 	"erp-system/internal/pkg/middleware"
@@ -77,6 +78,8 @@ import (
 func main() {
 	initConfig()
 	logger.Init()
+	// 注册 decimal 入参校验标签（decgt/decgte/declte），必须在首个 HTTP 请求绑定前完成。
+	decimalx.InitGin()
 
 	dbConn := db.Init()
 

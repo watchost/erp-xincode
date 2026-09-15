@@ -2,11 +2,13 @@
 
 package dto
 
+import "github.com/shopspring/decimal"
+
 type CreateWorkOrderReq struct {
-	ProductID   int64   `json:"product_id" binding:"required"`
-	PlanQty     float64 `json:"plan_qty" binding:"required,gt=0"`
-	PlanStartAt string  `json:"plan_start_at"`
-	PlanEndAt   string  `json:"plan_end_at"`
+	ProductID   int64           `json:"product_id" binding:"required"`
+	PlanQty     decimal.Decimal `json:"plan_qty" binding:"decgt=0"`
+	PlanStartAt string          `json:"plan_start_at"`
+	PlanEndAt   string          `json:"plan_end_at"`
 }
 
 type WorkOrderVO struct {
@@ -15,8 +17,8 @@ type WorkOrderVO struct {
 	ProductID   int64                 `json:"product_id"`
 	ProductCode string                `json:"product_code"`
 	ProductName string                `json:"product_name"`
-	PlanQty     float64               `json:"plan_qty"`
-	ProducedQty float64               `json:"produced_qty"`
+	PlanQty     decimal.Decimal       `json:"plan_qty"`
+	ProducedQty decimal.Decimal       `json:"produced_qty"`
 	Status      int                   `json:"status"`
 	StatusDesc  string                `json:"status_desc"`
 	PlanStartAt string                `json:"plan_start_at"`
@@ -27,13 +29,13 @@ type WorkOrderVO struct {
 }
 
 type WorkOrderMaterialVO struct {
-	ID           int64   `json:"id"`
-	MaterialID   int64   `json:"material_id"`
-	MaterialCode string  `json:"material_code"`
-	MaterialName string  `json:"material_name"`
-	PlanQty      float64 `json:"plan_qty"`
-	IssuedQty    float64 `json:"issued_qty"`
-	Unit         string  `json:"unit"`
+	ID           int64           `json:"id"`
+	MaterialID   int64           `json:"material_id"`
+	MaterialCode string          `json:"material_code"`
+	MaterialName string          `json:"material_name"`
+	PlanQty      decimal.Decimal `json:"plan_qty"`
+	IssuedQty    decimal.Decimal `json:"issued_qty"`
+	Unit         string          `json:"unit"`
 }
 
 type WorkOrderListReq struct {
@@ -45,20 +47,20 @@ type WorkOrderListReq struct {
 }
 
 type MaterialIssueScanReq struct {
-	WorkOrderNo    string  `json:"work_order_no" binding:"required"`
-	MaterialCode   string  `json:"material_code" binding:"required"`
-	WarehouseCode  string  `json:"warehouse_code" binding:"required"`
-	LocationCode   string  `json:"location_code" binding:"required"`
-	Qty            float64 `json:"qty" binding:"required,gt=0"`
-	DeviceCode     string  `json:"device_code"`
-	IdempotencyKey string  `json:"-"`
+	WorkOrderNo    string          `json:"work_order_no" binding:"required"`
+	MaterialCode   string          `json:"material_code" binding:"required"`
+	WarehouseCode  string          `json:"warehouse_code" binding:"required"`
+	LocationCode   string          `json:"location_code" binding:"required"`
+	Qty            decimal.Decimal `json:"qty" binding:"decgt=0"`
+	DeviceCode     string          `json:"device_code"`
+	IdempotencyKey string          `json:"-"`
 }
 
 type MaterialIssueScanRes struct {
-	OutboundNo string  `json:"outbound_no"`
-	Matched    bool    `json:"matched"`
-	DiffQty    float64 `json:"diff_qty"`
-	AfterQty   float64 `json:"after_qty"`
+	OutboundNo string          `json:"outbound_no"`
+	Matched    bool            `json:"matched"`
+	DiffQty    decimal.Decimal `json:"diff_qty"`
+	AfterQty   decimal.Decimal `json:"after_qty"`
 }
 
 // ProductionReceiptReq 生产入库/完工报工扫码。
@@ -67,36 +69,36 @@ type MaterialIssueScanRes struct {
 // 用于成品库存移动加权计价与「借 库存商品 / 贷 生产成本」过账，必须 > 0 以保证
 // 库存台账金额与财务分录一致。
 type ProductionReceiptReq struct {
-	WorkOrderNo    string  `json:"work_order_no" binding:"required"`
-	WarehouseCode  string  `json:"warehouse_code" binding:"required"`
-	LocationCode   string  `json:"location_code" binding:"required"`
-	Qty            float64 `json:"qty" binding:"required,gt=0"`
-	UnitCost       float64 `json:"unit_cost" binding:"required,gt=0"`
-	DeviceCode     string  `json:"device_code"`
-	IdempotencyKey string  `json:"-"`
+	WorkOrderNo    string          `json:"work_order_no" binding:"required"`
+	WarehouseCode  string          `json:"warehouse_code" binding:"required"`
+	LocationCode   string          `json:"location_code" binding:"required"`
+	Qty            decimal.Decimal `json:"qty" binding:"decgt=0"`
+	UnitCost       decimal.Decimal `json:"unit_cost" binding:"decgt=0"`
+	DeviceCode     string          `json:"device_code"`
+	IdempotencyKey string          `json:"-"`
 }
 
 type ProductionReceiptRes struct {
-	ReceiptNo       string  `json:"receipt_no"`
-	Matched         bool    `json:"matched"`
-	AfterQty        float64 `json:"after_qty"`
-	WorkOrderStatus int     `json:"work_order_status"`
-	Completed       bool    `json:"completed"`
+	ReceiptNo       string          `json:"receipt_no"`
+	Matched         bool            `json:"matched"`
+	AfterQty        decimal.Decimal `json:"after_qty"`
+	WorkOrderStatus int             `json:"work_order_status"`
+	Completed       bool            `json:"completed"`
 }
 
 type CreateBomReq struct {
 	ProductID      int64        `json:"product_id" binding:"required"`
 	BomVersion     string       `json:"bom_version"`
 	EffectiveStart string       `json:"effective_start"`
-	Items          []BomItemReq `json:"items" binding:"required,min=1"`
+	Items          []BomItemReq `json:"items" binding:"required,min=1,dive"`
 }
 
 type BomItemReq struct {
-	MaterialID int64   `json:"material_id" binding:"required"`
-	Qty        float64 `json:"qty" binding:"required,gt=0"`
-	Unit       string  `json:"unit" binding:"required"`
-	ScrapRate  float64 `json:"scrap_rate"`
-	Sequence   int     `json:"sequence"`
+	MaterialID int64           `json:"material_id" binding:"required"`
+	Qty        decimal.Decimal `json:"qty" binding:"decgt=0"`
+	Unit       string          `json:"unit" binding:"required"`
+	ScrapRate  decimal.Decimal `json:"scrap_rate" binding:"decgte=0"`
+	Sequence   int             `json:"sequence"`
 }
 
 type BomVO struct {
@@ -113,12 +115,12 @@ type BomVO struct {
 }
 
 type BomItemVO struct {
-	ID           int64   `json:"id"`
-	MaterialID   int64   `json:"material_id"`
-	MaterialCode string  `json:"material_code"`
-	MaterialName string  `json:"material_name"`
-	Qty          float64 `json:"qty"`
-	Unit         string  `json:"unit"`
-	ScrapRate    float64 `json:"scrap_rate"`
-	Sequence     int     `json:"sequence"`
+	ID           int64           `json:"id"`
+	MaterialID   int64           `json:"material_id"`
+	MaterialCode string          `json:"material_code"`
+	MaterialName string          `json:"material_name"`
+	Qty          decimal.Decimal `json:"qty"`
+	Unit         string          `json:"unit"`
+	ScrapRate    decimal.Decimal `json:"scrap_rate" binding:"decgte=0"`
+	Sequence     int             `json:"sequence"`
 }

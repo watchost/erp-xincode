@@ -71,7 +71,7 @@
 
 ### 1.3 库存与成本正确性（第 1-2 周）
 
-**当前状态：后端核心路径已完成。** 已实现 repository 透传 `tx`、库存行 `FOR UPDATE`、入库 `ON CONFLICT` upsert、移动加权平均成本、仓库/库位必填、跨服务同事务出入库方法、Redis 业务单号和扫码幂等。采购入库使用订单明细单价；生产领料按当前平均成本结转。待补：台账数据库级唯一约束、退库/冲销语义、盘点/调拨、金额 decimal 化。
+**当前状态：后端核心路径已完成。** 已实现 repository 透传 `tx`、库存行 `FOR UPDATE`、入库 `ON CONFLICT` upsert、移动加权平均成本、仓库/库位必填、跨服务同事务出入库方法、Redis 业务单号和扫码幂等。采购入库使用订单明细单价；生产领料按当前平均成本结转。金额/数量已全链路 `shopspring/decimal` 化（见 1.4）。待补：台账数据库级唯一约束、退库/冲销语义、盘点/调拨。
 
 依据 [AUDIT P0-3~P0-6](AUDIT.md)、[02-business.md](audit/02-business.md) S1-S3：
 
@@ -106,21 +106,31 @@
 
 ### 1.4 数据模型与迁移对齐（第 2 周）
 
-**当前状态：生产模块已对齐，财务模块和迁移工具链未完成。** `0004_production_schema.up.sql` 已补齐/修正 `prod_bom`、`prod_bom_item`、`prod_production_receipt` 及工单字段；Go 端创建 BOM/工单不再命中已审计的列名错误。待完成财务表结构对齐、引入正式迁移版本管理、统一状态码与 decimal/jsonb 类型。
+**当前状态：生产/财务 schema 已对齐，golang-migrate 工具链已落地，金额/数量 decimal 全链路迁移已完成（2026-09-15）。** `0004_production_schema.up.sql` 已补齐/修正 `prod_bom`、`prod_bom_item`、`prod_production_receipt` 及工单字段，财务表（凭证/分录/成本卡/预算）已在同事务闭环中验证；迁移通过 `migrations/fs.go` 的 `go:embed` 编入二进制，`cmd/migrate`（`erp-migrate up|down|version|force N`）统一执行，compose 用一次性 `erp-migrate` 任务替代 `docker-entrypoint-initdb.d`，服务端可选 `MIGRATE_AUTO=true` 启动即迁移。`0007_price_scale` 将采购订单单价加宽到 `NUMERIC(18,4)`。剩余：状态码常量与库表 DEFAULT 的最终统一、JSONB 类型统一。
+
+**decimal 迁移要点（2026-09-15）：**
+
+- Go 端 model/DTO/repository/service/handler 金额与数量字段全部使用 `github.com/shopspring/decimal`，非测试代码零 `float64`；
+- JSON wire 契约不变：`decimalx` 包 init 设置 `decimal.MarshalJSONWithoutQuotes = true`，序列化为裸 JSON number，前端零改动；反序列化同时接受 number 与数字字符串；
+- 舍入纪律（`internal/pkg/decimalx`）：仅在 ①DTO→model 落库前按列标度舍入（金额 `Money`=2 位、数量 `Qty`=3 位、单价/成本/BOM 用量 `Cost`=4 位、比率 `Rate`=4 位，half away from zero）、②跨精度运算结果落库前舍入；中间运算保全精度，除法一律 `DivRound`（移动加权均价用 8 位保护位再 `Cost` 舍入）；
+- 自定义校验标签 `decgt/decgte/declte` 替代内置 `gt/gte`（内置标签对 decimal 的 struct kind 会 panic）；嵌套切片 binding 必须带 `dive`（采购订单明细、BOM 明细——此前内层校验从未生效，零/负数量单价曾被放行，现返回 10005）；
+- **行为收紧**：凭证借贷平衡由 `math.Abs(diff) <= 0.01` 容差改为 `debitSum.Equal(creditSum)` 精确相等，不平衡返回 60004；
+- 采购/生产过账金额统一取仓库移动结果 `moveRes.CostAmount`（单一金额来源），不再各服务重复 `单价×数量`；
+- 精度用例守护：0.1+0.2 精确等于 0.3（预算占用/采购入库）、0.005 数量精确回读、除不尽均价 100.0909 与出库成本 300.27、借贷差一分 60004、成本卡 4 位标度 12.3457、BOM 损耗展开 2×1.1=2.2 与超领/超产 50006、dashboard 十进制阈值预警。
 
 依据 [AUDIT P0-7](AUDIT.md)：
 
 - 以 model 为准**重写迁移**，统一列名与类型；
 - 补建缺失表：`prod_bom`、`prod_bom_item`、`fin_budget`（具体 DDL 见 [development/schema.md](development/schema.md)）；
 - 统一状态码：库表 `DEFAULT 10` 改为与 Go 常量一致（10=草稿、20=已审批/已下达、30=进行中、40=已完成、50=已取消）；
-- 引入 `golang-migrate` 管理迁移，废弃 compose 挂载 `docker-entrypoint-initdb.d` 的方式；
-- 加 `schema_migrations` 版本表；
-- 金额/数量字段 Go 端从 `float64` 改为 `shopspring/decimal`，库表保持 `NUMERIC(18,2~4)`；
+- ✅ 引入 `golang-migrate` 管理迁移（SQL 经 `go:embed` 编入二进制，`erp-migrate` CLI），废弃 compose 挂载 `docker-entrypoint-initdb.d`（改为一次性迁移任务 + `.env` 密钥）；
+- ✅ `schema_migrations` 版本表由 golang-migrate 自动维护；
+- ✅ 金额/数量字段 Go 端从 `float64` 改为 `shopspring/decimal`（2026-09-15，全链路含 DTO/model/仓储/服务/测试，库表保持 `NUMERIC(18,2~4)`，`0007` 加宽单价列）；
 - JSONB 字段统一用 IAM 模块已有的 `JSON` 类型或 `datatypes.JSON`。
 
 ### 1.5 财务最小闭环（第 2 周）
 
-**当前状态：未开始。** 现有采购入库/生产领料只保证库存和业务单据一致，尚未生成会计凭证、预算占用或正确财务报表；这仍是 P0 剩余高优先级。
+**当前状态：最小闭环已完成并有集成测试守护（2026-09-15）。** 采购入库在同一事务内生成借贷双分录（借 1403 原材料 / 贷 2202 应付）与成本卡，不平衡过账（60004）整事务回滚；预算审批时条件 UPDATE 原子占用、取消时 `GREATEST` 释放、超额拒批（60010）；资产负债表/收支汇总已验证平衡。生产领料的财务分录尚未接入（随 P1 生产全流程补全）。
 
 依据 [02-business.md S5](audit/02-business.md)：
 
@@ -147,15 +157,15 @@
 
 - [x] 无 `Authorization: x` 不能访问任何 `/api/v1/*`；
 - [x] 低权限用户访问未授权接口返回 403；
-- [ ] 并发出库不会超卖（压测：100 并发扣 100 库存，最终 qty=0）；
-- [ ] 采购入库后 `avg_cost` 正确反映采购价（需集成测试覆盖）；
-- [ ] 单据写入失败时库存回滚（故障注入测试）；
-- [ ] `POST /production/bom` 在执行 `0004_production_schema` 后不再 SQL 报错；
-- [ ] `GET /finance/account-entries` 等财务接口在财务 schema 对齐后不再 SQL 报错；
-- [ ] 财务报表借贷平衡，收入取贷方；
-- [ ] `go test ./...` 至少覆盖库存/采购/财务 service 核心路径；
-- [ ] `govulncheck ./...` 无高危；
-- [ ] 镜像以非 root 运行，`/healthz` 返回 200。
+- [x] 并发出库不会超卖（`TestConcurrentOutbound_NoOversell`：120 并发扣 100 库存，恰好 100 成功 / 20 报库存不足，最终 qty=available=0，台账合计 -100）；
+- [x] 采购入库后 `avg_cost` 正确反映采购价（`TestInbound_MovingWeightedAverage`、`TestPurchaseFlow_PartialThenComplete` 集成测试覆盖）；
+- [x] 单据写入失败时库存回滚（`TestInbound_PostingFailureRollsBackInventory` 故障注入：财务过账失败，库存/台账/收货数/入库单整事务回滚）；
+- [x] `POST /production/bom` 在执行 `0004_production_schema` 后不再 SQL 报错（2026-09-15 HTTP 冒烟返回 201，BOM+明细落库）；
+- [x] `GET /finance/account-entries` 等财务接口在财务 schema 对齐后不再 SQL 报错（2026-09-15 HTTP 冒烟返回 200）；
+- [x] 财务报表借贷平衡，收入取贷方（`TestFinancialReport_BalanceSheetBalanced` 验证资产=负债+净资产，借贷合计相等）；
+- [x] `go test ./...` 至少覆盖库存/采购/财务 service 核心路径（`internal/testsupport` 每包自动建库迁移，库存/采购/财务三包集成测试全绿）；
+- [x] `govulncheck ./...` 无高危（2026-09-15：0 affecting；仅余 1 个不可达的 x/crypto 库级通告）；
+- [x] 镜像以非 root 运行，`/healthz` 返回 200（Dockerfile `USER app`；2026-09-15 实测 200）。
 
 ---
 
@@ -475,7 +485,7 @@ API 前缀：`/api/v1/sales/*`。
 | ORM | gorm v1.25.5 | 保持 |
 | 数据库 | PostgreSQL 15 | 升级到 16 |
 | 迁移 | SQL 文件挂载 | golang-migrate |
-| 金额 | float64 | shopspring/decimal |
+| 金额 | shopspring/decimal（后端，2026-09-15） | 前端 decimal.js 随前端改造接入 |
 | 日志 | logrus | zap（或保持 logrus JSON） |
 | 测试 | 无 | testcontainers-go + testify |
 | 任务 | 无 | asynq（基于 Redis 的异步任务/worker） |

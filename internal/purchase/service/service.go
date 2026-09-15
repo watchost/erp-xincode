@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 
 	financeService "erp-system/internal/finance/service"
@@ -15,6 +16,7 @@ import (
 	"erp-system/internal/pkg/auth"
 	"erp-system/internal/pkg/bizno"
 	"erp-system/internal/pkg/db"
+	"erp-system/internal/pkg/decimalx"
 	"erp-system/internal/pkg/errors"
 	"erp-system/internal/pkg/idemp"
 	"erp-system/internal/purchase/dto"
@@ -36,8 +38,8 @@ const (
 // 由 *financeService.FinanceService 满足。
 type financeGateway interface {
 	financeService.Poster
-	ReserveBudgetTx(ctx context.Context, tx *gorm.DB, budgetType string, amount float64) error
-	ReleaseBudgetTx(ctx context.Context, tx *gorm.DB, budgetType string, amount float64) error
+	ReserveBudgetTx(ctx context.Context, tx *gorm.DB, budgetType string, amount decimal.Decimal) error
+	ReleaseBudgetTx(ctx context.Context, tx *gorm.DB, budgetType string, amount decimal.Decimal) error
 }
 
 type PurchaseService struct {
@@ -106,7 +108,7 @@ func (s *PurchaseService) CreateOrder(ctx context.Context, req dto.CreatePurchas
 	}
 
 	orderNo := s.numbers.Next(ctx, "PO")
-	totalAmount := 0.0
+	totalAmount := decimal.Zero
 
 	items := make([]model.PurPurchaseOrderItem, 0, len(req.Items))
 	for _, item := range req.Items {
@@ -115,12 +117,15 @@ func (s *PurchaseService) CreateOrder(ctx context.Context, req dto.CreatePurchas
 			return nil, errors.New(40003, 404, "物料不存在")
 		}
 		_ = mat
-		totalAmount += item.Qty * item.Price
+		// 落库标度：数量 3 位、单价 4 位；行金额与订单总额按金额 2 位归整。
+		q := decimalx.Qty(item.Qty)
+		price := decimalx.Cost(item.Price)
+		totalAmount = totalAmount.Add(decimalx.Money(q.Mul(price)))
 		items = append(items, model.PurPurchaseOrderItem{
 			MaterialID:  item.MaterialID,
-			Qty:         item.Qty,
-			ReceivedQty: 0,
-			Price:       item.Price,
+			Qty:         q,
+			ReceivedQty: decimal.Zero,
+			Price:       price,
 		})
 	}
 
@@ -196,7 +201,7 @@ func (s *PurchaseService) CancelOrder(ctx context.Context, orderNo string) error
 				return err
 			}
 			for _, it := range items {
-				if it.ReceivedQty > 0 {
+				if it.ReceivedQty.IsPositive() {
 					return errors.New(40007, 409, "订单已有入库记录，不能取消")
 				}
 			}
@@ -302,8 +307,8 @@ func (s *PurchaseService) InboundScan(ctx context.Context, req dto.PurchaseInbou
 	}
 
 	inboundNo := s.numbers.Next(ctx, "IB")
-	var afterQty float64
-	var remaining float64
+	var afterQty decimal.Decimal
+	var remaining decimal.Decimal
 
 	err = s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
 		order, err := s.orderRepo.FindByOrderNoForUpdate(tx, req.OrderNo)
@@ -334,7 +339,9 @@ func (s *PurchaseService) InboundScan(ctx context.Context, req dto.PurchaseInbou
 		if err != nil {
 			return err
 		}
-		if locked.ReceivedQty+req.Qty > locked.Qty {
+		// 入参数量按 NUMERIC(18,3) 归整，后续库存、超收、收齐判断全部使用该值。
+		reqQty := decimalx.Qty(req.Qty)
+		if locked.ReceivedQty.Add(reqQty).Cmp(locked.Qty) > 0 {
 			return errors.New(40006, 400, "入库数量超出订单数量")
 		}
 
@@ -343,7 +350,7 @@ func (s *PurchaseService) InboundScan(ctx context.Context, req dto.PurchaseInbou
 			MaterialID:  material.ID,
 			WarehouseID: warehouse.ID,
 			LocationID:  location.ID,
-			Qty:         req.Qty,
+			Qty:         reqQty,
 			UnitCost:    locked.Price,
 			BizType:     warehouseService.BizTypePurchaseInbound,
 			BizNo:       inboundNo,
@@ -352,19 +359,22 @@ func (s *PurchaseService) InboundScan(ctx context.Context, req dto.PurchaseInbou
 			return err
 		}
 		afterQty = moveRes.AfterQty
-		remaining = locked.Qty - locked.ReceivedQty - req.Qty
+		remaining = locked.Qty.Sub(locked.ReceivedQty).Sub(reqQty)
 
-		if err := s.orderRepo.UpdateItemReceivedQty(tx, locked.ID, req.Qty); err != nil {
+		if err := s.orderRepo.UpdateItemReceivedQty(tx, locked.ID, reqQty); err != nil {
 			return err
 		}
 
+		// 金额单一来源：库存移动返回的 cost_amount（已按金额标度归整），
+		// 入库单、分录、成本卡共用，杜绝三处重复 price*qty 产生尾差。
+		amount := moveRes.CostAmount
 		inbound := model.PurPurchaseInbound{
 			InboundNo:   inboundNo,
 			OrderID:     order.ID,
 			SupplierID:  order.SupplierID,
 			WarehouseID: warehouse.ID,
 			Status:      1,
-			CostAmount:  locked.Price * req.Qty,
+			CostAmount:  amount,
 			CreatedBy:   auth.UserIDFromContext(ctx),
 		}
 		if err := s.inboundRepo.Create(tx, &inbound); err != nil {
@@ -372,8 +382,7 @@ func (s *PurchaseService) InboundScan(ctx context.Context, req dto.PurchaseInbou
 		}
 
 		// 同事务过账：借 原材料（1403）/ 贷 应付账款（2202），并写材料成本卡。
-		// 金额=采购单价×入库数量；任一分录失败随业务事务一并回滚。
-		amount := locked.Price * req.Qty
+		// 金额取库存移动的 cost_amount；任一分录失败随业务事务一并回滚。
 		if err := s.finance.PostTx(ctx, tx, financeService.PostingInput{
 			BizType:     financeService.BizTypePurchaseInbound,
 			BizNo:       inboundNo,
@@ -399,9 +408,9 @@ func (s *PurchaseService) InboundScan(ctx context.Context, req dto.PurchaseInbou
 		for _, it := range items {
 			received := it.ReceivedQty
 			if it.ID == locked.ID {
-				received = locked.ReceivedQty + req.Qty
+				received = locked.ReceivedQty.Add(reqQty)
 			}
-			if received < it.Qty {
+			if received.Cmp(it.Qty) < 0 {
 				allDone = false
 				break
 			}

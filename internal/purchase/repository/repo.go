@@ -3,6 +3,7 @@
 package repository
 
 import (
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -19,7 +20,7 @@ type PurchaseOrderRepository interface {
 	// 事务内方法：供 InboundScan 在同一事务里锁定订单/明细。
 	FindByOrderNoForUpdate(tx *gorm.DB, orderNo string) (*model.PurPurchaseOrder, error)
 	FindItemForUpdate(tx *gorm.DB, itemID int64) (*model.PurPurchaseOrderItem, error)
-	UpdateItemReceivedQty(tx *gorm.DB, itemID int64, qty float64) error
+	UpdateItemReceivedQty(tx *gorm.DB, itemID int64, qty decimal.Decimal) error
 	UpdateOrderStatus(tx *gorm.DB, orderID int64, status int, fields map[string]interface{}) error
 }
 
@@ -100,7 +101,7 @@ func (r *purchaseOrderRepo) FindItems(orderID int64) ([]model.PurPurchaseOrderIt
 	return items, nil
 }
 
-func (r *purchaseOrderRepo) UpdateItemReceivedQty(tx *gorm.DB, itemID int64, qty float64) error {
+func (r *purchaseOrderRepo) UpdateItemReceivedQty(tx *gorm.DB, itemID int64, qty decimal.Decimal) error {
 	return tx.Model(&model.PurPurchaseOrderItem{}).
 		Where("id = ?", itemID).
 		Update("received_qty", gorm.Expr("received_qty + ?", qty)).Error

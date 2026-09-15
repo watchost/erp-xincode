@@ -5,8 +5,10 @@ package repository
 import (
 	"time"
 
-	"erp-system/internal/finance/model"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+
+	"erp-system/internal/finance/model"
 )
 
 type CostCardRepository interface {
@@ -16,36 +18,36 @@ type CostCardRepository interface {
 }
 
 type CostSummaryRow struct {
-	ProductID    int64   `json:"product_id"`
-	MaterialCost float64 `json:"material_cost"`
-	LaborCost    float64 `json:"labor_cost"`
-	OverheadCost float64 `json:"overhead_cost"`
+	ProductID    int64           `json:"product_id"`
+	MaterialCost decimal.Decimal `json:"material_cost"`
+	LaborCost    decimal.Decimal `json:"labor_cost"`
+	OverheadCost decimal.Decimal `json:"overhead_cost"`
 }
 
 type AccountEntryRepository interface {
 	Create(tx *gorm.DB, entry *model.FinAccountEntry) error
 	List(accountCode, bizType, bizNo, startDate, endDate string, page, pageSize int) ([]model.FinAccountEntry, int64, error)
-	GetBalance(accountCode string, endDate string) (float64, error)
+	GetBalance(accountCode string, endDate string) (decimal.Decimal, error)
 	// SumBalance 返回 account_code LIKE prefix+'%' 的分录在 [start, end) 区间内
 	// 「借方合计 − 贷方合计」。借增科目（资产/成本/费用）结果为正，贷增科目
 	// （负债/权益/收入）结果为负。start/end 为 nil 表示该方向不限制时间。
-	SumBalance(prefix string, start, end *time.Time) (float64, error)
+	SumBalance(prefix string, start, end *time.Time) (decimal.Decimal, error)
 }
 
 type BudgetRepository interface {
 	Create(tx *gorm.DB, budget *model.FinBudget) error
 	List(budgetType string, year, month int, page, pageSize int) ([]model.FinBudget, int64, error)
 	FindByTypeAndPeriod(budgetType string, year, month int) (*model.FinBudget, error)
-	UpdateUsedAmount(tx *gorm.DB, budgetID int64, amount float64) error
+	UpdateUsedAmount(tx *gorm.DB, budgetID int64, amount decimal.Decimal) error
 	// ReserveAtomic 在调用方事务内原子占用预算：仅当 used_amount+amount<=amount 时
 	// 累加 used_amount 并返回 (exists=true, ok=true)。预算行不存在返回
 	// (exists=false, ok=false)（表示本期未设预算，调用方可选择不强制）；
 	// 预算存在但余额不足返回 (exists=true, ok=false)。单条条件 UPDATE，并发安全。
-	ReserveAtomic(tx *gorm.DB, budgetType string, year, month int, amount float64) (exists bool, ok bool, err error)
+	ReserveAtomic(tx *gorm.DB, budgetType string, year, month int, amount decimal.Decimal) (exists bool, ok bool, err error)
 	// ReleaseAtomic 在调用方事务内原子释放预算：used_amount 扣减 amount，
 	// 用 GREATEST(...,0) 兜底防止跨期/重复释放导致占用为负。命中预算行返回 true；
 	// 本期未设预算返回 false（调用方视为不启用预算控制，无需释放）。
-	ReleaseAtomic(tx *gorm.DB, budgetType string, year, month int, amount float64) (exists bool, err error)
+	ReleaseAtomic(tx *gorm.DB, budgetType string, year, month int, amount decimal.Decimal) (exists bool, err error)
 }
 
 type costCardRepo struct {
@@ -150,8 +152,8 @@ func (r *accountEntryRepo) List(accountCode, bizType, bizNo, startDate, endDate 
 	return list, total, nil
 }
 
-func (r *accountEntryRepo) GetBalance(accountCode string, endDate string) (float64, error) {
-	var balance float64
+func (r *accountEntryRepo) GetBalance(accountCode string, endDate string) (decimal.Decimal, error) {
+	var balance decimal.Decimal
 	err := r.db.Model(&model.FinAccountEntry{}).
 		Select("COALESCE(SUM(debit_amount), 0) - COALESCE(SUM(credit_amount), 0)").
 		Where("account_code = ?", accountCode).
@@ -160,8 +162,8 @@ func (r *accountEntryRepo) GetBalance(accountCode string, endDate string) (float
 	return balance, err
 }
 
-func (r *accountEntryRepo) SumBalance(prefix string, start, end *time.Time) (float64, error) {
-	var balance float64
+func (r *accountEntryRepo) SumBalance(prefix string, start, end *time.Time) (decimal.Decimal, error) {
+	var balance decimal.Decimal
 	q := r.db.Model(&model.FinAccountEntry{}).
 		Select("COALESCE(SUM(debit_amount), 0) - COALESCE(SUM(credit_amount), 0)").
 		Where("account_code LIKE ?", prefix+"%")
@@ -217,13 +219,13 @@ func (r *budgetRepo) FindByTypeAndPeriod(budgetType string, year, month int) (*m
 	return &budget, nil
 }
 
-func (r *budgetRepo) UpdateUsedAmount(tx *gorm.DB, budgetID int64, amount float64) error {
+func (r *budgetRepo) UpdateUsedAmount(tx *gorm.DB, budgetID int64, amount decimal.Decimal) error {
 	return tx.Model(&model.FinBudget{}).
 		Where("id = ?", budgetID).
 		Update("used_amount", gorm.Expr("used_amount + ?", amount)).Error
 }
 
-func (r *budgetRepo) ReserveAtomic(tx *gorm.DB, budgetType string, year, month int, amount float64) (bool, bool, error) {
+func (r *budgetRepo) ReserveAtomic(tx *gorm.DB, budgetType string, year, month int, amount decimal.Decimal) (bool, bool, error) {
 	res := tx.Model(&model.FinBudget{}).
 		Where("budget_type = ? AND year = ? AND month = ? AND used_amount + ? <= amount",
 			budgetType, year, month, amount).
@@ -248,7 +250,7 @@ func (r *budgetRepo) ReserveAtomic(tx *gorm.DB, budgetType string, year, month i
 	return true, false, nil
 }
 
-func (r *budgetRepo) ReleaseAtomic(tx *gorm.DB, budgetType string, year, month int, amount float64) (bool, error) {
+func (r *budgetRepo) ReleaseAtomic(tx *gorm.DB, budgetType string, year, month int, amount decimal.Decimal) (bool, error) {
 	res := tx.Model(&model.FinBudget{}).
 		Where("budget_type = ? AND year = ? AND month = ?", budgetType, year, month).
 		Update("used_amount", gorm.Expr("GREATEST(used_amount - ?, 0)", amount))

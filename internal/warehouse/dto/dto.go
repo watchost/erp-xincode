@@ -2,13 +2,15 @@
 
 package dto
 
+import "github.com/shopspring/decimal"
+
 type ScanEvent struct {
-	OrderNo       string  `json:"order_no"`
-	MaterialCode  string  `json:"material_code"`
-	LocationCode  string  `json:"location_code"`
-	Qty           float64 `json:"qty"`
-	DeviceCode    string  `json:"device_code"`
-	WarehouseCode string  `json:"warehouse_code"`
+	OrderNo       string          `json:"order_no"`
+	MaterialCode  string          `json:"material_code"`
+	LocationCode  string          `json:"location_code"`
+	Qty           decimal.Decimal `json:"qty"`
+	DeviceCode    string          `json:"device_code"`
+	WarehouseCode string          `json:"warehouse_code"`
 }
 
 // InboundScanReq 入库扫码请求。
@@ -16,47 +18,47 @@ type ScanEvent struct {
 // UnitCost 可选：采购入库时由采购单价传入；其它来源可为 0。
 // IdempotencyKey 由 handler 从 header 写入，不接受 body 覆盖。
 type InboundScanReq struct {
-	MaterialCode   string  `json:"material_code" binding:"required"`
-	WarehouseCode  string  `json:"warehouse_code" binding:"required"`
-	LocationCode   string  `json:"location_code" binding:"required"`
-	Qty            float64 `json:"qty" binding:"required,gt=0"`
-	UnitCost       float64 `json:"unit_cost" binding:"omitempty,gte=0"`
-	DeviceCode     string  `json:"device_code"`
-	IdempotencyKey string  `json:"-"`
+	MaterialCode   string          `json:"material_code" binding:"required"`
+	WarehouseCode  string          `json:"warehouse_code" binding:"required"`
+	LocationCode   string          `json:"location_code" binding:"required"`
+	Qty            decimal.Decimal `json:"qty" binding:"decgt=0"`
+	UnitCost       decimal.Decimal `json:"unit_cost" binding:"decgte=0"`
+	DeviceCode     string          `json:"device_code"`
+	IdempotencyKey string          `json:"-"`
 }
 
 type InboundScanRes struct {
-	InboundNo string  `json:"inbound_no"`
-	Matched   bool    `json:"matched"`
-	DiffQty   float64 `json:"diff_qty"`
-	AfterQty  float64 `json:"after_qty"`
-	AvgCost   float64 `json:"avg_cost"`
+	InboundNo string          `json:"inbound_no"`
+	Matched   bool            `json:"matched"`
+	DiffQty   decimal.Decimal `json:"diff_qty"`
+	AfterQty  decimal.Decimal `json:"after_qty"`
+	AvgCost   decimal.Decimal `json:"avg_cost"`
 }
 
 // OutboundScanReq 出库扫码请求。WarehouseCode/LocationCode 必填。
 type OutboundScanReq struct {
-	OutboundNo     string  `json:"outbound_no"`
-	MaterialCode   string  `json:"material_code" binding:"required"`
-	WarehouseCode  string  `json:"warehouse_code" binding:"required"`
-	LocationCode   string  `json:"location_code" binding:"required"`
-	Qty            float64 `json:"qty" binding:"required,gt=0"`
-	DeviceCode     string  `json:"device_code"`
-	IdempotencyKey string  `json:"-"`
+	OutboundNo     string          `json:"outbound_no"`
+	MaterialCode   string          `json:"material_code" binding:"required"`
+	WarehouseCode  string          `json:"warehouse_code" binding:"required"`
+	LocationCode   string          `json:"location_code" binding:"required"`
+	Qty            decimal.Decimal `json:"qty" binding:"decgt=0"`
+	DeviceCode     string          `json:"device_code"`
+	IdempotencyKey string          `json:"-"`
 }
 
 type InventoryVO struct {
-	ID            int64   `json:"id"`
-	MaterialID    int64   `json:"material_id"`
-	MaterialCode  string  `json:"material_code"`
-	MaterialName  string  `json:"material_name"`
-	WarehouseID   int64   `json:"warehouse_id"`
-	WarehouseName string  `json:"warehouse_name"`
-	LocationID    int64   `json:"location_id"`
-	LocationCode  string  `json:"location_code"`
-	Qty           float64 `json:"qty"`
-	AvailableQty  float64 `json:"available_qty"`
-	AvgCost       float64 `json:"avg_cost"`
-	TotalValue    float64 `json:"total_value"`
+	ID            int64           `json:"id"`
+	MaterialID    int64           `json:"material_id"`
+	MaterialCode  string          `json:"material_code"`
+	MaterialName  string          `json:"material_name"`
+	WarehouseID   int64           `json:"warehouse_id"`
+	WarehouseName string          `json:"warehouse_name"`
+	LocationID    int64           `json:"location_id"`
+	LocationCode  string          `json:"location_code"`
+	Qty           decimal.Decimal `json:"qty"`
+	AvailableQty  decimal.Decimal `json:"available_qty"`
+	AvgCost       decimal.Decimal `json:"avg_cost"`
+	TotalValue    decimal.Decimal `json:"total_value"`
 }
 
 type InventoryQuery struct {
@@ -68,26 +70,26 @@ type InventoryQuery struct {
 }
 
 type StockAlertVO struct {
-	ID            int64   `json:"id"`
-	MaterialCode  string  `json:"material_code"`
-	MaterialName  string  `json:"material_name"`
-	WarehouseName string  `json:"warehouse_name"`
-	CurrentQty    float64 `json:"current_qty"`
-	MinQty        float64 `json:"min_qty"`
-	Level         string  `json:"level"`
+	ID            int64           `json:"id"`
+	MaterialCode  string          `json:"material_code"`
+	MaterialName  string          `json:"material_name"`
+	WarehouseName string          `json:"warehouse_name"`
+	CurrentQty    decimal.Decimal `json:"current_qty"`
+	MinQty        decimal.Decimal `json:"min_qty"`
+	Level         string          `json:"level"`
 }
 
 type StockLedgerVO struct {
-	ID           int64   `json:"id"`
-	MaterialCode string  `json:"material_code"`
-	MaterialName string  `json:"material_name"`
-	BizType      int     `json:"biz_type"`
-	BizTypeDesc  string  `json:"biz_type_desc"`
-	BizNo        string  `json:"biz_no"`
-	ChangeQty    float64 `json:"change_qty"`
-	AfterQty     float64 `json:"after_qty"`
-	CostAmount   float64 `json:"cost_amount"`
-	CreatedAt    string  `json:"created_at"`
+	ID           int64           `json:"id"`
+	MaterialCode string          `json:"material_code"`
+	MaterialName string          `json:"material_name"`
+	BizType      int             `json:"biz_type"`
+	BizTypeDesc  string          `json:"biz_type_desc"`
+	BizNo        string          `json:"biz_no"`
+	ChangeQty    decimal.Decimal `json:"change_qty"`
+	AfterQty     decimal.Decimal `json:"after_qty"`
+	CostAmount   decimal.Decimal `json:"cost_amount"`
+	CreatedAt    string          `json:"created_at"`
 }
 
 // MoveInput 用于"在外部事务里执行库存移动"，被采购入库/生产领料等调用。
@@ -96,8 +98,8 @@ type MoveInput struct {
 	MaterialID  int64
 	WarehouseID int64
 	LocationID  int64
-	Qty         float64 // 入库为正、出库为负
-	UnitCost    float64 // 入库单价；出库时忽略
+	Qty         decimal.Decimal // 入库为正、出库为负
+	UnitCost    decimal.Decimal // 入库单价；出库时忽略
 	BizType     int
 	BizNo       string
 }
@@ -106,7 +108,7 @@ type MoveInput struct {
 // CostAmount 为本次移动结转的成本金额：入库=本次入库单价×数量，出库=移动加权平均单价×数量。
 // 供财务过账在同一事务内取数，避免重复计算与口径不一致。
 type MoveResult struct {
-	AfterQty   float64
-	AvgCost    float64
-	CostAmount float64
+	AfterQty   decimal.Decimal
+	AvgCost    decimal.Decimal
+	CostAmount decimal.Decimal
 }

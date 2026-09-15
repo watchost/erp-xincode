@@ -2,22 +2,24 @@
 
 package dto
 
+import "github.com/shopspring/decimal"
+
 type MaterialVO struct {
-	ID            int64          `json:"id"`
-	MaterialCode  string         `json:"material_code"`
-	Name          string         `json:"name"`
-	Spec          string         `json:"spec"`
-	CategoryID    int64          `json:"category_id"`
-	Unit          string         `json:"unit"`
-	CostMethod    int            `json:"cost_method"`
-	Attributes    map[string]any `json:"attributes"`
-	Status        int            `json:"status"`
-	MinStock      *float64       `json:"min_stock"`
-	MaxStock      *float64       `json:"max_stock"`
-	BatchManaged  bool           `json:"batch_managed"`
-	SerialManaged bool           `json:"serial_managed"`
-	ShelfLifeDays int            `json:"shelf_life_days"`
-	CreatedAt     string         `json:"created_at"`
+	ID            int64            `json:"id"`
+	MaterialCode  string           `json:"material_code"`
+	Name          string           `json:"name"`
+	Spec          string           `json:"spec"`
+	CategoryID    int64            `json:"category_id"`
+	Unit          string           `json:"unit"`
+	CostMethod    int              `json:"cost_method"`
+	Attributes    map[string]any   `json:"attributes"`
+	Status        int              `json:"status"`
+	MinStock      *decimal.Decimal `json:"min_stock"`
+	MaxStock      *decimal.Decimal `json:"max_stock"`
+	BatchManaged  bool             `json:"batch_managed"`
+	SerialManaged bool             `json:"serial_managed"`
+	ShelfLifeDays int              `json:"shelf_life_days"`
+	CreatedAt     string           `json:"created_at"`
 }
 
 type MaterialListReq struct {
