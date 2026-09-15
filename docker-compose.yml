@@ -1,24 +1,19 @@
 # Copyright 2026 zhouhouping. All Rights Reserved.
+# 机密通过 .env 注入（参考 .env.example），compose 文件不再出现明文密码。
 
 services:
   postgres:
     image: postgres:15-alpine
     container_name: erp-postgres
     environment:
-      POSTGRES_DB: erp_system
-      POSTGRES_USER: erp_user
-      POSTGRES_PASSWORD: erp_password_zhouhouping_2026
+      POSTGRES_DB: ${DB_NAME:-erp_system}
+      POSTGRES_USER: ${DB_USER:-erp_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?请在 .env 中设置 DB_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./migrations/0001_init.up.sql:/docker-entrypoint-initdb.d/001_init.sql
-      - ./migrations/0002_openapi_device.up.sql:/docker-entrypoint-initdb.d/002_openapi.sql
-      - ./migrations/0003_iam_permissions.up.sql:/docker-entrypoint-initdb.d/003_iam_permissions.sql
-      - ./migrations/0004_production_schema.up.sql:/docker-entrypoint-initdb.d/004_production_schema.sql
-      - ./migrations/0005_finance_schema.up.sql:/docker-entrypoint-initdb.d/005_finance_schema.sql
-      - ./migrations/0006_mdm_crud_purchase_production.up.sql:/docker-entrypoint-initdb.d/006_mdm_crud_purchase_production.sql
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U erp_user -d erp_system"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-erp_user} -d ${DB_NAME:-erp_system}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -26,34 +21,52 @@ services:
   redis:
     image: redis:7-alpine
     container_name: erp-redis
-    command: redis-server --requirepass redis_password_zhouhouping_2026
+    command: redis-server --requirepass ${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}
     volumes:
       - redis_data:/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "redis_password_zhouhouping_2026", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  erp-server:
+  # 一次性迁移任务：应用内嵌 SQL 迁移，成功后退出；服务启动依赖其成功完成。
+  erp-migrate:
+    image: erp-server:latest
     build:
       context: .
       dockerfile: Dockerfile
+    command: ["./erp-migrate", "up"]
+    container_name: erp-migrate
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=${DB_USER:-erp_user}
+      - DB_PASSWORD=${DB_PASSWORD:?请在 .env 中设置 DB_PASSWORD}
+      - DB_NAME=${DB_NAME:-erp_system}
+      - DB_SSLMODE=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  erp-server:
+    image: erp-server:latest
     container_name: erp-server
     environment:
       - SERVER_PORT=8080
       - DB_HOST=postgres
       - DB_PORT=5432
-      - DB_USER=erp_user
-      - DB_PASSWORD=erp_password_zhouhouping_2026
-      - DB_NAME=erp_system
+      - DB_USER=${DB_USER:-erp_user}
+      - DB_PASSWORD=${DB_PASSWORD:?请在 .env 中设置 DB_PASSWORD}
+      - DB_NAME=${DB_NAME:-erp_system}
       - DB_SSLMODE=disable
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - REDIS_PASSWORD=redis_password_zhouhouping_2026
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}
       - REDIS_DB=0
-      - JWT_SECRET=erp-system-jwt-secret-key-zhouhouping-copyright-2026
+      - JWT_SECRET=${JWT_SECRET:?请在 .env 中设置 JWT_SECRET（>=32 字节）}
       - JWT_ACCESS_EXPIRE=2h
       - JWT_REFRESH_EXPIRE=168h
     depends_on:
@@ -61,6 +74,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      erp-migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]

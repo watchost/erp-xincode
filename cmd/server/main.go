@@ -22,6 +22,7 @@ import (
 	"erp-system/internal/pkg/idemp"
 	"erp-system/internal/pkg/logger"
 	"erp-system/internal/pkg/middleware"
+	migratetool "erp-system/internal/pkg/migrate"
 	"erp-system/internal/pkg/redis"
 	"erp-system/internal/routes"
 
@@ -78,6 +79,25 @@ func main() {
 	logger.Init()
 
 	dbConn := db.Init()
+
+	// 可选：启动时自动执行数据库迁移（MIGRATE_AUTO=true）。
+	// 默认关闭，生产环境建议显式执行 `erp-migrate up`（compose 中为一次性迁移任务）。
+	if viper.GetBool("migrate.auto") {
+		dsn := fmt.Sprintf(
+			"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+			envOr("DB_HOST", "localhost"),
+			envOr("DB_PORT", "5432"),
+			envOr("DB_USER", "erp_user"),
+			envOr("DB_PASSWORD", "erp_password_zhouhouping_2026"),
+			envOr("DB_NAME", "erp_system"),
+			envOr("DB_SSLMODE", "disable"),
+		)
+		if err := migratetool.Up(dsn); err != nil {
+			log.Fatalf("auto migrate failed: %v", err)
+		}
+		log.Println("database migrations applied (MIGRATE_AUTO=true)")
+	}
+
 	rdb := redis.Init()
 	txManager := db.NewTxManager(dbConn)
 
@@ -292,6 +312,13 @@ func main() {
 		log.Printf("graceful shutdown failed: %v", err)
 	}
 	log.Println("server exited")
+}
+
+func envOr(key, fallback string) string {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		return v
+	}
+	return fallback
 }
 
 func initConfig() {
