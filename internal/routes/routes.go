@@ -57,6 +57,7 @@ const (
 
 	PermDeviceManage = "device:manage"
 	PermLLMChat      = "llm:chat"
+	PermLLMPrompt    = "llm:prompt"
 	PermOpenAPIAdmin = "openapi:admin"
 )
 
@@ -270,8 +271,17 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 		llm := api.Group("/llm", middleware.RequirePermission(PermLLMChat))
 		{
 			llm.POST("/chat", d.LLM.Chat)
+			llm.POST("/chat/stream", d.LLM.ChatStream)
 			llm.GET("/sessions", d.LLM.ListSessions)
 			llm.GET("/sessions/:session_id/history", d.LLM.GetHistory)
+		}
+
+		prompts := api.Group("/llm/prompts", middleware.RequirePermission(PermLLMPrompt))
+		{
+			prompts.GET("", d.LLM.ListPromptTemplates)
+			prompts.POST("", d.LLM.CreatePromptTemplate)
+			prompts.PUT("/:id", d.LLM.UpdatePromptTemplate)
+			prompts.DELETE("/:id", d.LLM.DeletePromptTemplate)
 		}
 
 		openapi := api.Group("/openapi", middleware.RequirePermission(PermOpenAPIAdmin))

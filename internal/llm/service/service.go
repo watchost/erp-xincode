@@ -10,64 +10,79 @@ import (
 	"erp-system/internal/llm/gateway"
 	"erp-system/internal/llm/model"
 	"erp-system/internal/llm/repository"
+	"erp-system/internal/pkg/errors"
 )
+
+// LLM 模块错误码 602xx 段。
+const (
+	errCodeSessionNotFound = 60201
+	errCodeTemplateExists  = 60202
+	errCodeTemplateNotFound = 60203
+)
+
+// historyLimit 多轮对话携带的最近消息条数（含本轮问题）。
+const historyLimit = 20
+
+// defaultChatSystemPrompt 无启用模板时的兜底系统提示。
+const defaultChatSystemPrompt = "你是ERP系统的智能分析助手，帮助用户进行业务数据分析和决策支持。回答基于事实，不要编造数据。"
+
+const fallbackAnswer = "AI服务暂时不可用，请稍后重试"
 
 type LLMService struct {
 	sessionRepo repository.SessionRepository
 	messageRepo repository.MessageRepository
+	promptRepo  repository.PromptTemplateRepository
 	llmGateway  gateway.LLMGateway
 }
 
 func NewLLMService(
 	sessionRepo repository.SessionRepository,
 	messageRepo repository.MessageRepository,
+	promptRepo repository.PromptTemplateRepository,
 	llmGateway gateway.LLMGateway,
 ) *LLMService {
 	return &LLMService{
 		sessionRepo: sessionRepo,
 		messageRepo: messageRepo,
+		promptRepo:  promptRepo,
 		llmGateway:  llmGateway,
 	}
 }
 
-func (s *LLMService) Chat(ctx context.Context, userID int64, req dto.ChatReq) (*dto.ChatRes, error) {
-	sessionID := req.SessionID
+// resolveSession 校验会话归属（IDOR 防护）；sessionID=0 时新建会话。
+func (s *LLMService) resolveSession(userID, sessionID int64, question string) (int64, error) {
 	if sessionID == 0 {
 		session := &model.LlmSession{
 			UserID: userID,
-			Title:  truncateTitle(req.Question, 50),
+			Title:  truncateTitle(question, 50),
 		}
 		if err := s.sessionRepo.Create(session); err != nil {
-			return nil, err
+			return 0, err
 		}
-		sessionID = session.ID
+		return session.ID, nil
 	}
+	session, err := s.sessionRepo.FindByID(sessionID)
+	if err != nil {
+		return 0, errors.New(errCodeSessionNotFound, 404, "会话不存在")
+	}
+	if session.UserID != userID {
+		return 0, errors.New(10004, 403, "无权限访问")
+	}
+	return sessionID, nil
+}
 
-	userMessage := &model.LlmMessage{
-		SessionID: sessionID,
-		Role:      model.RoleUser,
-		Content:   req.Question,
-	}
-	if err := s.messageRepo.Create(userMessage); err != nil {
-		return nil, err
-	}
-
-	messages, err := s.buildMessages(sessionID, req.Question)
+func (s *LLMService) Chat(ctx context.Context, userID int64, req dto.ChatReq) (*dto.ChatRes, error) {
+	sessionID, messages, err := s.prepareChat(userID, req)
 	if err != nil {
 		return nil, err
 	}
 
 	answer, err := s.llmGateway.Chat(ctx, messages)
 	if err != nil {
-		answer = "AI服务暂时不可用，请稍后重试"
+		answer = fallbackAnswer
 	}
 
-	assistantMessage := &model.LlmMessage{
-		SessionID: sessionID,
-		Role:      model.RoleAssistant,
-		Content:   answer,
-	}
-	if err := s.messageRepo.Create(assistantMessage); err != nil {
+	if err := s.persistAnswer(sessionID, answer); err != nil {
 		return nil, err
 	}
 
@@ -78,23 +93,94 @@ func (s *LLMService) Chat(ctx context.Context, userID int64, req dto.ChatReq) (*
 	}, nil
 }
 
-func (s *LLMService) buildMessages(sessionID int64, question string) ([]gateway.Message, error) {
-	var messages []gateway.Message
+// ChatStream 流式对话：增量文本经 emit 回调，结束后落库完整答案。
+func (s *LLMService) ChatStream(ctx context.Context, userID int64, req dto.ChatReq, emit gateway.ChatStreamFunc) (int64, error) {
+	sessionID, messages, err := s.prepareChat(userID, req)
+	if err != nil {
+		return 0, err
+	}
 
-	messages = append(messages, gateway.Message{
-		Role:    "system",
-		Content: "你是ERP系统的智能分析助手，帮助用户进行业务数据分析和决策支持。",
+	answer, err := s.llmGateway.ChatStream(ctx, messages, emit)
+	if err != nil {
+		answer = fallbackAnswer
+		if emit != nil && answer != "" {
+			_ = emit(answer)
+		}
+	}
+
+	if err := s.persistAnswer(sessionID, answer); err != nil {
+		return 0, err
+	}
+	return sessionID, nil
+}
+
+// prepareChat 公共前置：解析/校验会话、落库用户消息、拼装多轮上下文。
+func (s *LLMService) prepareChat(userID int64, req dto.ChatReq) (int64, []gateway.Message, error) {
+	sessionID, err := s.resolveSession(userID, req.SessionID, req.Question)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	userMessage := &model.LlmMessage{
+		SessionID: sessionID,
+		Role:      model.RoleUser,
+		Content:   req.Question,
+	}
+	if err := s.messageRepo.Create(userMessage); err != nil {
+		return 0, nil, err
+	}
+
+	messages, err := s.buildMessages(sessionID)
+	if err != nil {
+		return 0, nil, err
+	}
+	return sessionID, messages, nil
+}
+
+func (s *LLMService) persistAnswer(sessionID int64, answer string) error {
+	return s.messageRepo.Create(&model.LlmMessage{
+		SessionID: sessionID,
+		Role:      model.RoleAssistant,
+		Content:   answer,
 	})
+}
 
-	messages = append(messages, gateway.Message{
-		Role:    "user",
-		Content: question,
-	})
+// buildMessages 多轮对话：系统提示（Prompt 模板）+ 最近 N 条历史。
+func (s *LLMService) buildMessages(sessionID int64) ([]gateway.Message, error) {
+	systemPrompt := defaultChatSystemPrompt
+	if s.promptRepo != nil {
+		if tpl, err := s.promptRepo.FindEnabledByScene(model.PromptSceneChat); err == nil && tpl != nil {
+			systemPrompt = tpl.Content
+		}
+	}
 
+	messages := []gateway.Message{{Role: "system", Content: systemPrompt}}
+
+	history, err := s.messageRepo.ListRecentBySessionID(sessionID, historyLimit)
+	if err != nil {
+		return nil, err
+	}
+	for _, m := range history {
+		switch m.Role {
+		case model.RoleUser:
+			messages = append(messages, gateway.Message{Role: "user", Content: m.Content})
+		case model.RoleAssistant:
+			messages = append(messages, gateway.Message{Role: "assistant", Content: m.Content})
+		}
+	}
 	return messages, nil
 }
 
-func (s *LLMService) GetSessionHistory(ctx context.Context, sessionID int64) ([]dto.MessageVO, error) {
+// GetSessionHistory 校验会话归属后返回历史（IDOR 防护）。
+func (s *LLMService) GetSessionHistory(ctx context.Context, userID, sessionID int64) ([]dto.MessageVO, error) {
+	session, err := s.sessionRepo.FindByID(sessionID)
+	if err != nil {
+		return nil, errors.New(errCodeSessionNotFound, 404, "会话不存在")
+	}
+	if session.UserID != userID {
+		return nil, errors.New(10004, 403, "无权限访问")
+	}
+
 	messages, err := s.messageRepo.ListBySessionID(sessionID)
 	if err != nil {
 		return nil, err
@@ -141,6 +227,79 @@ func (s *LLMService) ListSessions(ctx context.Context, userID int64) ([]dto.Sess
 	}
 
 	return vos, nil
+}
+
+// ---------- Prompt 模板管理 ----------
+
+func (s *LLMService) CreatePromptTemplate(ctx context.Context, req dto.PromptTemplateReq) (*dto.PromptTemplateVO, error) {
+	if existing, _ := s.promptRepo.FindByCode(req.Code); existing != nil {
+		return nil, errors.New(errCodeTemplateExists, 409, "模板编码已存在")
+	}
+	tpl := &model.LlmPromptTemplate{
+		Code:    req.Code,
+		Name:    req.Name,
+		Scene:   req.Scene,
+		Content: req.Content,
+		Enabled: 1,
+	}
+	if err := s.promptRepo.Create(tpl); err != nil {
+		return nil, err
+	}
+	return promptTemplateVO(tpl), nil
+}
+
+func (s *LLMService) UpdatePromptTemplate(ctx context.Context, id int64, req dto.PromptTemplateReq) (*dto.PromptTemplateVO, error) {
+	tpl, err := s.promptRepo.FindByID(id)
+	if err != nil {
+		return nil, errors.New(errCodeTemplateNotFound, 404, "模板不存在")
+	}
+	if req.Code != tpl.Code {
+		if existing, _ := s.promptRepo.FindByCode(req.Code); existing != nil {
+			return nil, errors.New(errCodeTemplateExists, 409, "模板编码已存在")
+		}
+	}
+	tpl.Code = req.Code
+	tpl.Name = req.Name
+	tpl.Scene = req.Scene
+	tpl.Content = req.Content
+	if req.Enabled != nil {
+		tpl.Enabled = *req.Enabled
+	}
+	if err := s.promptRepo.Update(tpl); err != nil {
+		return nil, err
+	}
+	return promptTemplateVO(tpl), nil
+}
+
+func (s *LLMService) DeletePromptTemplate(ctx context.Context, id int64) error {
+	if _, err := s.promptRepo.FindByID(id); err != nil {
+		return errors.New(errCodeTemplateNotFound, 404, "模板不存在")
+	}
+	return s.promptRepo.Delete(id)
+}
+
+func (s *LLMService) ListPromptTemplates(ctx context.Context, scene string, page, pageSize int) ([]dto.PromptTemplateVO, int64, error) {
+	list, total, err := s.promptRepo.List(scene, page, pageSize)
+	if err != nil {
+		return nil, 0, err
+	}
+	vos := make([]dto.PromptTemplateVO, 0, len(list))
+	for _, t := range list {
+		vos = append(vos, *promptTemplateVO(&t))
+	}
+	return vos, total, nil
+}
+
+func promptTemplateVO(t *model.LlmPromptTemplate) *dto.PromptTemplateVO {
+	return &dto.PromptTemplateVO{
+		ID:        t.ID,
+		Code:      t.Code,
+		Name:      t.Name,
+		Scene:     t.Scene,
+		Content:   t.Content,
+		Enabled:   t.Enabled,
+		CreatedAt: t.CreatedAt.Format(time.RFC3339),
+	}
 }
 
 func truncateTitle(s string, maxLen int) string {

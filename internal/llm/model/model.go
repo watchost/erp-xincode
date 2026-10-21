@@ -30,5 +30,24 @@ const (
 	RoleSystem    = 3
 )
 
-func (LlmSession) TableName() string { return "llm_session" }
-func (LlmMessage) TableName() string { return "llm_message" }
+// LlmPromptTemplate Prompt 模板（按场景取用，支持启停）。
+type LlmPromptTemplate struct {
+	ID        int64      `json:"id"`
+	Code      string     `json:"code"`
+	Name      string     `json:"name"`
+	Scene     string     `json:"scene"` // chat=对话系统提示 dashboard=仪表盘分析
+	Content   string     `json:"content"`
+	Enabled   int        `json:"enabled"`
+	TenantID  int64      `json:"tenant_id"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt *time.Time `json:"-"`
+}
+
+const (
+	PromptSceneChat      = "chat"
+	PromptSceneDashboard = "dashboard"
+)
+
+func (LlmSession) TableName() string        { return "llm_session" }
+func (LlmMessage) TableName() string        { return "llm_message" }
+func (LlmPromptTemplate) TableName() string { return "llm_prompt_template" }

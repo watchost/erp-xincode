@@ -219,7 +219,8 @@ func main() {
 	// LLM模块
 	llmSessionRepo := llmRepository.NewSessionRepository(dbConn)
 	llmMessageRepo := llmRepository.NewMessageRepository(dbConn)
-	llmSvc := llmService.NewLLMService(llmSessionRepo, llmMessageRepo, llmGateway)
+	llmPromptRepo := llmRepository.NewPromptTemplateRepository(dbConn)
+	llmSvc := llmService.NewLLMService(llmSessionRepo, llmMessageRepo, llmPromptRepo, llmGateway)
 	llmH := llmHandler.NewLLMHandler(llmSvc)
 
 	// OpenAPI模块

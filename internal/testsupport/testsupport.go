@@ -50,6 +50,8 @@ var businessTables = []string{
 	"fin_budget",
 	"dev_device_message",
 	"dev_device",
+	"llm_message",
+	"llm_session",
 	"prod_production_receipt",
 	"prod_production_outbound",
 	"prod_work_order_bom",

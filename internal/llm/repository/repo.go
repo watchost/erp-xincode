@@ -16,6 +16,20 @@ type SessionRepository interface {
 type MessageRepository interface {
 	Create(message *model.LlmMessage) error
 	ListBySessionID(sessionID int64) ([]model.LlmMessage, error)
+	// ListRecentBySessionID 取最近 limit 条（按时间升序返回，供多轮对话拼上下文）。
+	ListRecentBySessionID(sessionID int64, limit int) ([]model.LlmMessage, error)
+}
+
+// PromptTemplateRepository Prompt 模板。
+type PromptTemplateRepository interface {
+	Create(t *model.LlmPromptTemplate) error
+	Update(t *model.LlmPromptTemplate) error
+	FindByID(id int64) (*model.LlmPromptTemplate, error)
+	FindByCode(code string) (*model.LlmPromptTemplate, error)
+	// FindEnabledByScene 取场景下最新启用的模板；无则返回 (nil, nil)。
+	FindEnabledByScene(scene string) (*model.LlmPromptTemplate, error)
+	List(scene string, page, pageSize int) ([]model.LlmPromptTemplate, int64, error)
+	Delete(id int64) error
 }
 
 type sessionRepo struct {
@@ -64,4 +78,81 @@ func (r *messageRepo) ListBySessionID(sessionID int64) ([]model.LlmMessage, erro
 		return nil, err
 	}
 	return messages, nil
+}
+
+func (r *messageRepo) ListRecentBySessionID(sessionID int64, limit int) ([]model.LlmMessage, error) {
+	var desc []model.LlmMessage
+	if err := r.db.Where("session_id = ?", sessionID).Order("id DESC").Limit(limit).Find(&desc).Error; err != nil {
+		return nil, err
+	}
+	// 反转为时间升序
+	messages := make([]model.LlmMessage, 0, len(desc))
+	for i := len(desc) - 1; i >= 0; i-- {
+		messages = append(messages, desc[i])
+	}
+	return messages, nil
+}
+
+type promptTemplateRepo struct {
+	db *gorm.DB
+}
+
+func NewPromptTemplateRepository(db *gorm.DB) PromptTemplateRepository {
+	return &promptTemplateRepo{db: db}
+}
+
+func (r *promptTemplateRepo) Create(t *model.LlmPromptTemplate) error {
+	return r.db.Create(t).Error
+}
+
+func (r *promptTemplateRepo) Update(t *model.LlmPromptTemplate) error {
+	return r.db.Save(t).Error
+}
+
+func (r *promptTemplateRepo) FindByID(id int64) (*model.LlmPromptTemplate, error) {
+	var t model.LlmPromptTemplate
+	if err := r.db.Where("id = ?", id).First(&t).Error; err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+func (r *promptTemplateRepo) FindByCode(code string) (*model.LlmPromptTemplate, error) {
+	var t model.LlmPromptTemplate
+	if err := r.db.Where("code = ?", code).First(&t).Error; err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+func (r *promptTemplateRepo) FindEnabledByScene(scene string) (*model.LlmPromptTemplate, error) {
+	var t model.LlmPromptTemplate
+	err := r.db.Where("scene = ? AND enabled = 1", scene).Order("id DESC").First(&t).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &t, nil
+}
+
+func (r *promptTemplateRepo) List(scene string, page, pageSize int) ([]model.LlmPromptTemplate, int64, error) {
+	var list []model.LlmPromptTemplate
+	var total int64
+	query := r.db.Model(&model.LlmPromptTemplate{})
+	if scene != "" {
+		query = query.Where("scene = ?", scene)
+	}
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if err := query.Order("id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&list).Error; err != nil {
+		return nil, 0, err
+	}
+	return list, total, nil
+}
+
+func (r *promptTemplateRepo) Delete(id int64) error {
+	return r.db.Delete(&model.LlmPromptTemplate{}, id).Error
 }
