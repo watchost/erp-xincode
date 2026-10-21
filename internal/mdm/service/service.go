@@ -26,6 +26,8 @@ type MDMService struct {
 	supplierRepo  repository.SupplierRepository
 	warehouseRepo repository.WarehouseRepository
 	locationRepo  repository.LocationRepository
+	categoryRepo  repository.CategoryRepository
+	customerRepo  repository.CustomerRepository
 	inventory     InventoryChecker
 }
 
@@ -34,6 +36,8 @@ func NewMDMService(
 	supplierRepo repository.SupplierRepository,
 	warehouseRepo repository.WarehouseRepository,
 	locationRepo repository.LocationRepository,
+	categoryRepo repository.CategoryRepository,
+	customerRepo repository.CustomerRepository,
 	inventory InventoryChecker,
 ) *MDMService {
 	return &MDMService{
@@ -41,6 +45,8 @@ func NewMDMService(
 		supplierRepo:  supplierRepo,
 		warehouseRepo: warehouseRepo,
 		locationRepo:  locationRepo,
+		categoryRepo:  categoryRepo,
+		customerRepo:  customerRepo,
 		inventory:     inventory,
 	}
 }
@@ -58,21 +64,24 @@ func (s *MDMService) ListMaterials(ctx context.Context, req dto.MaterialListReq)
 			json.Unmarshal(m.Attributes, &attrs)
 		}
 		vos = append(vos, dto.MaterialVO{
-			ID:            m.ID,
-			MaterialCode:  m.MaterialCode,
-			Name:          m.Name,
-			Spec:          m.Spec,
-			CategoryID:    m.CategoryID,
-			Unit:          m.Unit,
-			CostMethod:    m.CostMethod,
-			Attributes:    attrs,
-			Status:        m.Status,
-			MinStock:      m.MinStock,
-			MaxStock:      m.MaxStock,
-			BatchManaged:  m.BatchManaged,
-			SerialManaged: m.SerialManaged,
-			ShelfLifeDays: m.ShelfLifeDays,
-			CreatedAt:     m.CreatedAt.Format("2006-01-02 15:04:05"),
+			ID:             m.ID,
+			MaterialCode:   m.MaterialCode,
+			Name:           m.Name,
+			Spec:           m.Spec,
+			CategoryID:     m.CategoryID,
+			Unit:           m.Unit,
+			PurchaseUnit:   m.PurchaseUnit,
+			StockUnit:      m.StockUnit,
+			ConversionRate: m.ConversionRate,
+			CostMethod:     m.CostMethod,
+			Attributes:     attrs,
+			Status:         m.Status,
+			MinStock:       m.MinStock,
+			MaxStock:       m.MaxStock,
+			BatchManaged:   m.BatchManaged,
+			SerialManaged:  m.SerialManaged,
+			ShelfLifeDays:  m.ShelfLifeDays,
+			CreatedAt:      m.CreatedAt.Format("2006-01-02 15:04:05"),
 		})
 	}
 
@@ -94,21 +103,24 @@ func (s *MDMService) GetMaterial(ctx context.Context, id int64) (*dto.MaterialVO
 	}
 
 	return &dto.MaterialVO{
-		ID:            m.ID,
-		MaterialCode:  m.MaterialCode,
-		Name:          m.Name,
-		Spec:          m.Spec,
-		CategoryID:    m.CategoryID,
-		Unit:          m.Unit,
-		CostMethod:    m.CostMethod,
-		Attributes:    attrs,
-		Status:        m.Status,
-		MinStock:      m.MinStock,
-		MaxStock:      m.MaxStock,
-		BatchManaged:  m.BatchManaged,
-		SerialManaged: m.SerialManaged,
-		ShelfLifeDays: m.ShelfLifeDays,
-		CreatedAt:     m.CreatedAt.Format("2006-01-02 15:04:05"),
+		ID:             m.ID,
+		MaterialCode:   m.MaterialCode,
+		Name:           m.Name,
+		Spec:           m.Spec,
+		CategoryID:     m.CategoryID,
+		Unit:           m.Unit,
+		PurchaseUnit:   m.PurchaseUnit,
+		StockUnit:      m.StockUnit,
+		ConversionRate: m.ConversionRate,
+		CostMethod:     m.CostMethod,
+		Attributes:     attrs,
+		Status:         m.Status,
+		MinStock:       m.MinStock,
+		MaxStock:       m.MaxStock,
+		BatchManaged:   m.BatchManaged,
+		SerialManaged:  m.SerialManaged,
+		ShelfLifeDays:  m.ShelfLifeDays,
+		CreatedAt:      m.CreatedAt.Format("2006-01-02 15:04:05"),
 	}, nil
 }
 

@@ -14,6 +14,26 @@ type MaterialRepository interface {
 	Update(material *model.MdmMaterial) error
 	Delete(id int64) error
 	List(code, name string, page, pageSize int) ([]model.MdmMaterial, int64, error)
+	CountByCategory(categoryID int64) (int64, error)
+}
+
+type CategoryRepository interface {
+	FindByID(id int64) (*model.MdmMaterialCategory, error)
+	FindByCode(code string) (*model.MdmMaterialCategory, error)
+	List() ([]model.MdmMaterialCategory, error)
+	Create(c *model.MdmMaterialCategory) error
+	Update(c *model.MdmMaterialCategory) error
+	Delete(id int64) error
+	CountChildren(parentID int64) (int64, error)
+}
+
+type CustomerRepository interface {
+	FindByCode(code string) (*model.MdmCustomer, error)
+	FindByID(id int64) (*model.MdmCustomer, error)
+	Create(c *model.MdmCustomer) error
+	Update(c *model.MdmCustomer) error
+	Delete(id int64) error
+	List(code, name string, page, pageSize int) ([]model.MdmCustomer, int64, error)
 }
 
 type SupplierRepository interface {
@@ -250,4 +270,115 @@ func (r *locationRepo) CountByWarehouse(warehouseID int64) (int64, error) {
 	var count int64
 	err := r.db.Model(&model.MdmLocation{}).Where("warehouse_id = ?", warehouseID).Count(&count).Error
 	return count, err
+}
+
+func (r *materialRepo) CountByCategory(categoryID int64) (int64, error) {
+	var count int64
+	err := r.db.Model(&model.MdmMaterial{}).Where("category_id = ?", categoryID).Count(&count).Error
+	return count, err
+}
+
+type categoryRepo struct {
+	db *gorm.DB
+}
+
+func NewCategoryRepository(db *gorm.DB) CategoryRepository {
+	return &categoryRepo{db: db}
+}
+
+func (r *categoryRepo) FindByID(id int64) (*model.MdmMaterialCategory, error) {
+	var c model.MdmMaterialCategory
+	if err := r.db.Where("id = ?", id).First(&c).Error; err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (r *categoryRepo) FindByCode(code string) (*model.MdmMaterialCategory, error) {
+	var c model.MdmMaterialCategory
+	if err := r.db.Where("code = ?", code).First(&c).Error; err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (r *categoryRepo) List() ([]model.MdmMaterialCategory, error) {
+	var list []model.MdmMaterialCategory
+	if err := r.db.Order("code").Find(&list).Error; err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+func (r *categoryRepo) Create(c *model.MdmMaterialCategory) error {
+	return r.db.Create(c).Error
+}
+
+func (r *categoryRepo) Update(c *model.MdmMaterialCategory) error {
+	return r.db.Save(c).Error
+}
+
+func (r *categoryRepo) Delete(id int64) error {
+	return r.db.Delete(&model.MdmMaterialCategory{}, id).Error
+}
+
+func (r *categoryRepo) CountChildren(parentID int64) (int64, error) {
+	var count int64
+	err := r.db.Model(&model.MdmMaterialCategory{}).Where("parent_id = ?", parentID).Count(&count).Error
+	return count, err
+}
+
+type customerRepo struct {
+	db *gorm.DB
+}
+
+func NewCustomerRepository(db *gorm.DB) CustomerRepository {
+	return &customerRepo{db: db}
+}
+
+func (r *customerRepo) FindByCode(code string) (*model.MdmCustomer, error) {
+	var c model.MdmCustomer
+	if err := r.db.Where("customer_code = ?", code).First(&c).Error; err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (r *customerRepo) FindByID(id int64) (*model.MdmCustomer, error) {
+	var c model.MdmCustomer
+	if err := r.db.Where("id = ?", id).First(&c).Error; err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (r *customerRepo) Create(c *model.MdmCustomer) error {
+	return r.db.Create(c).Error
+}
+
+func (r *customerRepo) Update(c *model.MdmCustomer) error {
+	return r.db.Save(c).Error
+}
+
+func (r *customerRepo) Delete(id int64) error {
+	return r.db.Delete(&model.MdmCustomer{}, id).Error
+}
+
+func (r *customerRepo) List(code, name string, page, pageSize int) ([]model.MdmCustomer, int64, error) {
+	var customers []model.MdmCustomer
+	var total int64
+	query := r.db.Model(&model.MdmCustomer{})
+	if code != "" {
+		query = query.Where("customer_code LIKE ?", "%"+code+"%")
+	}
+	if name != "" {
+		query = query.Where("name LIKE ?", "%"+name+"%")
+	}
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if err := query.Order("created_at DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&customers).Error; err != nil {
+		return nil, 0, err
+	}
+	return customers, total, nil
 }

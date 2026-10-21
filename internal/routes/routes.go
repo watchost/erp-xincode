@@ -46,6 +46,8 @@ const (
 	PermMDMSupplier  = "mdm:supplier"
 	PermMDMWarehouse = "mdm:warehouse"
 	PermMDMLocation  = "mdm:location"
+	PermMDMCategory  = "mdm:category"
+	PermMDMCustomer  = "mdm:customer"
 
 	PermIAMUser      = "iam:user"
 	PermIAMRole      = "iam:role"
@@ -183,6 +185,17 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 			mdm.GET("/locations/:id", middleware.RequirePermission(PermMDMLocation), d.MDM.GetLocation)
 			mdm.PUT("/locations/:id", middleware.RequirePermission(PermMDMLocation), d.MDM.UpdateLocation)
 			mdm.DELETE("/locations/:id", middleware.RequirePermission(PermMDMLocation), d.MDM.DeleteLocation)
+
+			mdm.GET("/categories/tree", middleware.RequirePermission(PermMDMCategory), d.MDM.GetCategoryTree)
+			mdm.POST("/categories", middleware.RequirePermission(PermMDMCategory), d.MDM.CreateCategory)
+			mdm.PUT("/categories/:id", middleware.RequirePermission(PermMDMCategory), d.MDM.UpdateCategory)
+			mdm.DELETE("/categories/:id", middleware.RequirePermission(PermMDMCategory), d.MDM.DeleteCategory)
+
+			mdm.POST("/customers", middleware.RequirePermission(PermMDMCustomer), d.MDM.CreateCustomer)
+			mdm.GET("/customers", middleware.RequirePermission(PermMDMCustomer), d.MDM.ListCustomers)
+			mdm.GET("/customers/:id", middleware.RequirePermission(PermMDMCustomer), d.MDM.GetCustomer)
+			mdm.PUT("/customers/:id", middleware.RequirePermission(PermMDMCustomer), d.MDM.UpdateCustomer)
+			mdm.DELETE("/customers/:id", middleware.RequirePermission(PermMDMCustomer), d.MDM.DeleteCustomer)
 		}
 
 		warehouse := api.Group("/warehouse")

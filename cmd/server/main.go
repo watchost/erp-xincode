@@ -140,6 +140,8 @@ func main() {
 	mdmSupplierRepo := mdmRepository.NewSupplierRepository(dbConn)
 	mdmWarehouseRepo := mdmRepository.NewWarehouseRepository(dbConn)
 	mdmLocationRepo := mdmRepository.NewLocationRepository(dbConn)
+	mdmCategoryRepo := mdmRepository.NewCategoryRepository(dbConn)
+	mdmCustomerRepo := mdmRepository.NewCustomerRepository(dbConn)
 
 	// 公共基础设施：单号生成器、幂等键守卫
 	numberGen := bizno.NewGenerator(rdb)
@@ -168,7 +170,7 @@ func main() {
 	financeH := financeHandler.NewFinanceHandler(financeSvc)
 
 	// MDM service：warehouseSvc 作为 InventoryChecker 注入，删除主数据前做库存引用守卫。
-	mdmSvc := mdmService.NewMDMService(mdmMaterialRepo, mdmSupplierRepo, mdmWarehouseRepo, mdmLocationRepo, warehouseSvc)
+	mdmSvc := mdmService.NewMDMService(mdmMaterialRepo, mdmSupplierRepo, mdmWarehouseRepo, mdmLocationRepo, mdmCategoryRepo, mdmCustomerRepo, warehouseSvc)
 	mdmH := mdmHandler.NewMDMHandler(mdmSvc)
 
 	// 采购模块
