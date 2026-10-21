@@ -5,6 +5,8 @@ package service
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -27,11 +29,13 @@ import (
 	warehouseService "erp-system/internal/warehouse/service"
 )
 
+// 状态码与库表 DEFAULT 统一（迁移 0010）：10 创建 → 20 已下达 → 30 生产中 → 40 已完工；50 已关闭。
 const (
-	WorkOrderStatusDraft      = 1
-	WorkOrderStatusReleased   = 2
-	WorkOrderStatusInProgress = 3
-	WorkOrderStatusCompleted  = 4
+	WorkOrderStatusDraft      = 10
+	WorkOrderStatusReleased   = 20
+	WorkOrderStatusInProgress = 30
+	WorkOrderStatusCompleted  = 40
+	WorkOrderStatusClosed     = 50
 )
 
 // DataScopeResolver 由 IAM service 满足（窄接口，避免反向依赖 iam 包）。
@@ -181,9 +185,71 @@ func (s *ProductionService) ReleaseWorkOrder(ctx context.Context, workOrderNo st
 		if order.Status != WorkOrderStatusDraft {
 			return errors.New(50004, 409, "工单状态不允许下达")
 		}
-		// TODO(P1): 齐套检查——遍历 BOM 物料校验可用库存
+		// 齐套检查：下达前校验各物料可用库存（跨仓合计）是否够领料，缺料则整单拒绝。
+		materials, err := s.workOrderRepo.FindMaterials(order.ID)
+		if err != nil {
+			return err
+		}
+		var shortages []string
+		for _, m := range materials {
+			need := m.PlanQty.Sub(m.IssuedQty)
+			if !need.IsPositive() {
+				continue
+			}
+			avail, err := s.warehouseService.AvailableQtyByMaterial(ctx, m.MaterialID)
+			if err != nil {
+				return err
+			}
+			if avail.LessThan(need) {
+				code := strconv.FormatInt(m.MaterialID, 10)
+				if mat, merr := s.materialRepo.FindByID(m.MaterialID); merr == nil && mat != nil {
+					code = mat.MaterialCode
+				}
+				shortages = append(shortages, fmt.Sprintf("%s(需 %s / 可用 %s)", code, need.String(), avail.String()))
+			}
+		}
+		if len(shortages) > 0 {
+			return errors.New(50005, 409, "物料不齐套，缺料: "+strings.Join(shortages, "、"))
+		}
 		return s.workOrderRepo.UpdateWorkOrderStatus(tx, order.ID, WorkOrderStatusReleased, map[string]interface{}{
 			"actual_start_at": time.Now(),
+		})
+	})
+}
+
+// CloseWorkOrder 关闭工单。
+//   - 已完工(40)：正常归档关闭；
+//   - 已下达(20)/生产中(30)：仅在零领料、零入库时允许中止关闭（库存/成本未发生）；
+//   - 草稿(10)/已关闭(50)：不允许。
+func (s *ProductionService) CloseWorkOrder(ctx context.Context, workOrderNo string) error {
+	return s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
+		order, err := s.workOrderRepo.FindByWorkOrderNoForUpdate(tx, workOrderNo)
+		if err != nil {
+			return errors.New(50001, 404, "工单不存在")
+		}
+
+		switch order.Status {
+		case WorkOrderStatusCompleted:
+			// 正常关闭
+		case WorkOrderStatusReleased, WorkOrderStatusInProgress:
+			materials, err := s.workOrderRepo.FindMaterials(order.ID)
+			if err != nil {
+				return err
+			}
+			for _, m := range materials {
+				if m.IssuedQty.IsPositive() {
+					return errors.New(50006, 409, "工单已有领料记录，不能关闭")
+				}
+			}
+			if order.ProducedQty.IsPositive() {
+				return errors.New(50006, 409, "工单已有入库记录，不能关闭")
+			}
+		default:
+			return errors.New(50004, 409, "当前工单状态不允许关闭")
+		}
+
+		return s.workOrderRepo.UpdateWorkOrderStatus(tx, order.ID, WorkOrderStatusClosed, map[string]interface{}{
+			"actual_end_at": time.Now(),
 		})
 	})
 }
@@ -248,6 +314,8 @@ func (s *ProductionService) buildWorkOrderVO(order *model.ProWorkOrder, material
 		statusDesc = "生产中"
 	case WorkOrderStatusCompleted:
 		statusDesc = "已完成"
+	case WorkOrderStatusClosed:
+		statusDesc = "已关闭"
 	}
 
 	return &dto.WorkOrderVO{

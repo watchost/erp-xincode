@@ -25,6 +25,13 @@ export function releaseWorkOrder(workOrderNo) {
   })
 }
 
+export function closeWorkOrder(workOrderNo) {
+  return request({
+    url: `/production/work-orders/${workOrderNo}/close`,
+    method: 'post'
+  })
+}
+
 export function materialIssueScan(data) {
   return request({
     url: '/production/material-issue/scan',

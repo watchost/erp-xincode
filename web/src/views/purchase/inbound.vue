@@ -113,7 +113,7 @@ async function loadOrders() {
   try {
     const res = await listPurchaseOrders({ page: 1, page_size: 100 })
     if (res.code === 0) {
-      orderList.value = (res.data?.list || []).filter(o => o.status === 2 || o.status === 5)
+      orderList.value = (res.data?.list || []).filter(o => o.status === 20 || o.status === 30)
     }
   } catch (e) {
     orderList.value = []

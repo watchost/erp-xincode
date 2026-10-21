@@ -17,10 +17,11 @@
           </el-form-item>
           <el-form-item label="状态">
             <el-select v-model="searchForm.status" placeholder="请选择" clearable style="width: 120px">
-              <el-option label="草稿" :value="1" />
-              <el-option label="已下达" :value="2" />
-              <el-option label="生产中" :value="3" />
-              <el-option label="已完成" :value="4" />
+              <el-option label="草稿" :value="10" />
+              <el-option label="已下达" :value="20" />
+              <el-option label="生产中" :value="30" />
+              <el-option label="已完成" :value="40" />
+              <el-option label="已关闭" :value="50" />
             </el-select>
           </el-form-item>
           <el-form-item>
@@ -40,7 +41,7 @@
           <template #default="{ row }">
             <el-button type="primary" link size="small">查看</el-button>
             <el-button
-              v-if="row.status === 1"
+              v-if="row.status === 10"
               v-permission="'production:wo:create'"
               type="success"
               link
@@ -48,6 +49,16 @@
               @click="handleRelease(row)"
             >
               下达
+            </el-button>
+            <el-button
+              v-if="row.status === 20 || row.status === 30 || row.status === 40"
+              v-permission="'production:wo:create'"
+              type="danger"
+              link
+              size="small"
+              @click="handleClose(row)"
+            >
+              关闭
             </el-button>
           </template>
         </el-table-column>
@@ -97,7 +108,7 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
-import { listWorkOrders, createWorkOrder, releaseWorkOrder } from '@/api/production'
+import { listWorkOrders, createWorkOrder, releaseWorkOrder, closeWorkOrder } from '@/api/production'
 import { listMaterials } from '@/api/mdm'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -204,6 +215,24 @@ async function handleRelease(row) {
       const res = await releaseWorkOrder(row.work_order_no)
       if (res.code === 0) {
         ElMessage.success('下达成功')
+        loadData()
+      }
+    } catch (e) {
+      // 失败时拦截器已提示错误，不刷新列表
+    }
+  }).catch(() => {})
+}
+
+async function handleClose(row) {
+  ElMessageBox.confirm('确定关闭该工单吗？已领料/已入库的工单无法关闭。', '提示', {
+    confirmButtonText: '确定',
+    cancelButtonText: '取消',
+    type: 'warning'
+  }).then(async () => {
+    try {
+      const res = await closeWorkOrder(row.work_order_no)
+      if (res.code === 0) {
+        ElMessage.success('关闭成功')
         loadData()
       }
     } catch (e) {

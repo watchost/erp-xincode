@@ -27,11 +27,11 @@
           </el-form-item>
           <el-form-item label="状态">
             <el-select v-model="searchForm.status" placeholder="请选择" clearable style="width: 120px">
-              <el-option label="草稿" :value="1" />
-              <el-option label="已审批" :value="2" />
-              <el-option label="部分收货" :value="5" />
-              <el-option label="已完成" :value="3" />
-              <el-option label="已取消" :value="4" />
+              <el-option label="草稿" :value="10" />
+              <el-option label="已审批" :value="20" />
+              <el-option label="部分收货" :value="30" />
+              <el-option label="已完成" :value="40" />
+              <el-option label="已取消" :value="50" />
             </el-select>
           </el-form-item>
           <el-form-item>
@@ -56,7 +56,7 @@
           <template #default="{ row }">
             <el-button type="primary" link size="small" @click="viewDetail(row)">查看</el-button>
             <el-button
-              v-if="row.status === 1"
+              v-if="row.status === 10"
               v-permission="'purchase:order:approve'"
               type="success"
               link

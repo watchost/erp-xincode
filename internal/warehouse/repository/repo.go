@@ -5,6 +5,7 @@ package repository
 import (
 	"errors"
 
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -22,6 +23,7 @@ type InventoryRepository interface {
 	ExistsMaterialOnHand(materialID int64) (bool, error)
 	ExistsWarehouseInUse(warehouseID int64) (bool, error)
 	ExistsLocationInUse(locationID int64) (bool, error)
+	SumAvailableQty(materialID int64) (decimal.Decimal, error)
 }
 
 type StockLedgerRepository interface {
@@ -116,6 +118,19 @@ func (r *inventoryRepo) ExistsWarehouseInUse(warehouseID int64) (bool, error) {
 
 func (r *inventoryRepo) ExistsLocationInUse(locationID int64) (bool, error) {
 	return r.existsWhere("location_id = ?", locationID)
+}
+
+// SumAvailableQty 跨仓合计某物料的可用库存（工单齐套检查用）。无库存行时返回 0。
+func (r *inventoryRepo) SumAvailableQty(materialID int64) (decimal.Decimal, error) {
+	var total decimal.Decimal
+	err := r.db.Model(&model.InvInventory{}).
+		Select("COALESCE(SUM(available_qty), 0)").
+		Where("material_id = ?", materialID).
+		Scan(&total).Error
+	if err != nil {
+		return decimal.Zero, err
+	}
+	return total, nil
 }
 
 type stockLedgerRepo struct {

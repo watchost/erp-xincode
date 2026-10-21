@@ -94,13 +94,13 @@ func TestProductionFlow_DecimalBomIssueReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建工单失败: %v", err)
 	}
-	if err := svc.ReleaseWorkOrder(ctx, wo.WorkOrderNo); err != nil {
-		t.Fatalf("下达工单失败: %v", err)
-	}
-
-	// 组件备料：入库 3@100
+	// 组件备料：入库 3@100（齐套检查要求下达前可用库存 ≥ 需求 2.2）
 	if _, err := whSvc.Inbound(ctx, inboundFor(fx, testsupport.D("3"), testsupport.D("100"))); err != nil {
 		t.Fatalf("组件备料失败: %v", err)
+	}
+
+	if err := svc.ReleaseWorkOrder(ctx, wo.WorkOrderNo); err != nil {
+		t.Fatalf("下达工单失败: %v", err)
 	}
 
 	// 超领 3 > 计划 2.2 → 50006，库存不得扣减
@@ -165,4 +165,129 @@ func balanced(t *testing.T, gdb *gorm.DB, bizType string) bool {
 	gdb.Model(&model.FinAccountEntry{}).Where("biz_type = ?", bizType).Select("COALESCE(SUM(debit_amount),0)").Scan(&debit)
 	gdb.Model(&model.FinAccountEntry{}).Where("biz_type = ?", bizType).Select("COALESCE(SUM(credit_amount),0)").Scan(&credit)
 	return debit.Equal(credit)
+}
+
+// 齐套检查：无可用库存时下达返回 50005；补足库存后可下达。
+func TestReleaseWorkOrder_KittingCheck(t *testing.T) {
+	gdb := testsupport.NewDB(t)
+	fx := testsupport.CreateFixture(t, gdb, "kit")
+	svc, _, _ := newProductionService(t, gdb)
+	whSvc := testsupport.NewWarehouseService(gdb)
+	ctx := testsupport.CtxWithUser(1)
+	product := createProduct(t, gdb, "PROD-KIT-1")
+
+	if _, err := svc.CreateBom(ctx, productionDto.CreateBomReq{
+		ProductID: product.ID,
+		Items: []productionDto.BomItemReq{{
+			MaterialID: fx.Material.ID,
+			Qty:        testsupport.D("2"),
+			Unit:       "个",
+			ScrapRate:  decimal.Zero,
+		}},
+	}); err != nil {
+		t.Fatalf("创建 BOM 失败: %v", err)
+	}
+
+	wo, err := svc.CreateWorkOrder(ctx, productionDto.CreateWorkOrderReq{
+		ProductID: product.ID,
+		PlanQty:   testsupport.D("5"),
+	})
+	if err != nil {
+		t.Fatalf("创建工单失败: %v", err)
+	}
+
+	// 无库存：需求 10，可用 0 → 50005
+	if err := svc.ReleaseWorkOrder(ctx, wo.WorkOrderNo); appCode(err) != 50005 {
+		t.Fatalf("缺料下达应返回 50005，实际 %v", err)
+	}
+
+	// 部分库存：仍缺料 → 50005
+	if _, err := whSvc.Inbound(ctx, inboundFor(fx, testsupport.D("6"), testsupport.D("10"))); err != nil {
+		t.Fatalf("备料失败: %v", err)
+	}
+	if err := svc.ReleaseWorkOrder(ctx, wo.WorkOrderNo); appCode(err) != 50005 {
+		t.Fatalf("部分缺料下达应返回 50005，实际 %v", err)
+	}
+
+	// 补足：可用 12 ≥ 10 → 下达成功
+	if _, err := whSvc.Inbound(ctx, inboundFor(fx, testsupport.D("6"), testsupport.D("10"))); err != nil {
+		t.Fatalf("补料失败: %v", err)
+	}
+	if err := svc.ReleaseWorkOrder(ctx, wo.WorkOrderNo); err != nil {
+		t.Fatalf("齐套后下达失败: %v", err)
+	}
+}
+
+// 工单关闭：草稿不可关(50004)；已下达零领料可关；已领料不可关(50006)；完工可关。
+func TestCloseWorkOrder(t *testing.T) {
+	gdb := testsupport.NewDB(t)
+	fx := testsupport.CreateFixture(t, gdb, "close")
+	svc, _, _ := newProductionService(t, gdb)
+	whSvc := testsupport.NewWarehouseService(gdb)
+	ctx := testsupport.CtxWithUser(1)
+	product := createProduct(t, gdb, "PROD-CLOSE-1")
+
+	if _, err := svc.CreateBom(ctx, productionDto.CreateBomReq{
+		ProductID: product.ID,
+		Items: []productionDto.BomItemReq{{
+			MaterialID: fx.Material.ID,
+			Qty:        testsupport.D("1"),
+			Unit:       "个",
+			ScrapRate:  decimal.Zero,
+		}},
+	}); err != nil {
+		t.Fatalf("创建 BOM 失败: %v", err)
+	}
+	if _, err := whSvc.Inbound(ctx, inboundFor(fx, testsupport.D("100"), testsupport.D("10"))); err != nil {
+		t.Fatalf("备料失败: %v", err)
+	}
+
+	newWO := func(planQty string) string {
+		wo, err := svc.CreateWorkOrder(ctx, productionDto.CreateWorkOrderReq{
+			ProductID: product.ID,
+			PlanQty:   testsupport.D(planQty),
+		})
+		if err != nil {
+			t.Fatalf("创建工单失败: %v", err)
+		}
+		return wo.WorkOrderNo
+	}
+
+	// 草稿不可关闭
+	draftNo := newWO("1")
+	if err := svc.CloseWorkOrder(ctx, draftNo); appCode(err) != 50004 {
+		t.Fatalf("草稿关闭应返回 50004，实际 %v", err)
+	}
+
+	// 已下达零领料：可关闭
+	if err := svc.ReleaseWorkOrder(ctx, draftNo); err != nil {
+		t.Fatalf("下达失败: %v", err)
+	}
+	if err := svc.CloseWorkOrder(ctx, draftNo); err != nil {
+		t.Fatalf("零领料关闭失败: %v", err)
+	}
+	// 重复关闭 → 50004
+	if err := svc.CloseWorkOrder(ctx, draftNo); appCode(err) != 50004 {
+		t.Fatalf("重复关闭应返回 50004，实际 %v", err)
+	}
+
+	// 已领料：不可关闭（50006）
+	issuedNo := newWO("2")
+	if err := svc.ReleaseWorkOrder(ctx, issuedNo); err != nil {
+		t.Fatalf("下达失败: %v", err)
+	}
+	if _, err := svc.MaterialIssueScan(ctx, issueReq(issuedNo, fx, testsupport.D("1"))); err != nil {
+		t.Fatalf("领料失败: %v", err)
+	}
+	if err := svc.CloseWorkOrder(ctx, issuedNo); appCode(err) != 50006 {
+		t.Fatalf("已领料关闭应返回 50006，实际 %v", err)
+	}
+
+	// 完工：可关闭
+	if _, err := svc.ProductionReceipt(ctx, receiptReq(issuedNo, fx, testsupport.D("2"), testsupport.D("10"))); err != nil {
+		t.Fatalf("完工入库失败: %v", err)
+	}
+	if err := svc.CloseWorkOrder(ctx, issuedNo); err != nil {
+		t.Fatalf("完工关闭失败: %v", err)
+	}
 }

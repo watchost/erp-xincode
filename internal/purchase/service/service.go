@@ -28,11 +28,12 @@ import (
 )
 
 const (
-	OrderStatusDraft             = 1
-	OrderStatusApproved          = 2
-	OrderStatusCompleted         = 3
-	OrderStatusCanceled          = 4
-	OrderStatusPartiallyReceived = 5
+	// 状态码与库表 DEFAULT 统一（迁移 0010）：10 草稿 → 20 已审批 → 30 部分收货 → 40 已完成；50 已取消。
+	OrderStatusDraft             = 10
+	OrderStatusApproved          = 20
+	OrderStatusPartiallyReceived = 30
+	OrderStatusCompleted         = 40
+	OrderStatusCanceled          = 50
 )
 
 // financeGateway 聚合采购流程需要的财务同事务能力：凭证过账 + 预算占用/释放。
@@ -238,7 +239,7 @@ func (s *PurchaseService) ListOrders(ctx context.Context, req dto.PurchaseOrderL
 		}
 		scopes = append(scopes, datascope.Apply(params))
 	}
-	list, total, err := s.orderRepo.List(req.OrderNo, req.SupplierID, req.Status, req.Page, req.PageSize, scopes...)
+	list, total, err := s.orderRepo.List(req.OrderNo, req.SupplierID, req.Status, req.DateFrom, req.DateTo, req.Page, req.PageSize, scopes...)
 	if err != nil {
 		return nil, 0, err
 	}

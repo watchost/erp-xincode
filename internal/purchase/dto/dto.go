@@ -40,10 +40,13 @@ type PurchaseOrderItemVO struct {
 	Price        decimal.Decimal `json:"price"`
 }
 
+// PurchaseOrderListReq 多条件查询：单号/供应商/状态/创建日期范围（YYYY-MM-DD，闭区间）。
 type PurchaseOrderListReq struct {
 	OrderNo    string `form:"order_no"`
 	SupplierID int64  `form:"supplier_id"`
 	Status     int    `form:"status"`
+	DateFrom   string `form:"date_from"`
+	DateTo     string `form:"date_to"`
 	Page       int    `form:"page" binding:"required,min=1"`
 	PageSize   int    `form:"page_size" binding:"required,min=1,max=100"`
 }

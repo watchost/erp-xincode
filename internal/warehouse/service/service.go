@@ -302,6 +302,11 @@ func (s *WarehouseService) LocationInUse(ctx context.Context, locationID int64) 
 	return s.invRepo.ExistsLocationInUse(locationID)
 }
 
+// AvailableQtyByMaterial 返回某物料跨仓合计的可用库存（生产工单下达前齐套检查用）。
+func (s *WarehouseService) AvailableQtyByMaterial(ctx context.Context, materialID int64) (decimal.Decimal, error) {
+	return s.invRepo.SumAvailableQty(materialID)
+}
+
 func (s *WarehouseService) ListInventory(ctx context.Context, req dto.InventoryQuery) ([]dto.InventoryVO, int64, error) {
 	list, total, err := s.invRepo.List(req.WarehouseID, req.MaterialCode, req.MaterialName, req.Page, req.PageSize)
 	if err != nil {

@@ -14,7 +14,7 @@ type PurchaseOrderRepository interface {
 	Create(tx *gorm.DB, order *model.PurPurchaseOrder) error
 	CreateItems(tx *gorm.DB, items []model.PurPurchaseOrderItem) error
 	FindByOrderNo(orderNo string) (*model.PurPurchaseOrder, error)
-	List(orderNo string, supplierID int64, status int, page, pageSize int, scopes ...func(*gorm.DB) *gorm.DB) ([]model.PurPurchaseOrder, int64, error)
+	List(orderNo string, supplierID int64, status int, dateFrom, dateTo string, page, pageSize int, scopes ...func(*gorm.DB) *gorm.DB) ([]model.PurPurchaseOrder, int64, error)
 	FindItems(orderID int64) ([]model.PurPurchaseOrderItem, error)
 
 	// 事务内方法：供 InboundScan 在同一事务里锁定订单/明细。
@@ -71,7 +71,7 @@ func (r *purchaseOrderRepo) FindItemForUpdate(tx *gorm.DB, itemID int64) (*model
 	return &item, nil
 }
 
-func (r *purchaseOrderRepo) List(orderNo string, supplierID int64, status int, page, pageSize int, scopes ...func(*gorm.DB) *gorm.DB) ([]model.PurPurchaseOrder, int64, error) {
+func (r *purchaseOrderRepo) List(orderNo string, supplierID int64, status int, dateFrom, dateTo string, page, pageSize int, scopes ...func(*gorm.DB) *gorm.DB) ([]model.PurPurchaseOrder, int64, error) {
 	var list []model.PurPurchaseOrder
 	var total int64
 	query := r.db.Model(&model.PurPurchaseOrder{}).Scopes(scopes...)
@@ -83,6 +83,13 @@ func (r *purchaseOrderRepo) List(orderNo string, supplierID int64, status int, p
 	}
 	if status > 0 {
 		query = query.Where("status = ?", status)
+	}
+	if dateFrom != "" {
+		query = query.Where("created_at >= ?::date", dateFrom)
+	}
+	if dateTo != "" {
+		// 闭区间含当日，取次日 0 点之前
+		query = query.Where("created_at < (?::date + interval '1 day')", dateTo)
 	}
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err

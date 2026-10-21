@@ -45,6 +45,19 @@ func (h *ProductionHandler) ReleaseWorkOrder(c *gin.Context) {
 	response.Success(c, nil)
 }
 
+func (h *ProductionHandler) CloseWorkOrder(c *gin.Context) {
+	workOrderNo := c.Param("work_order_no")
+	if workOrderNo == "" {
+		response.BadRequest(c, "工单号不能为空")
+		return
+	}
+	if err := h.productionService.CloseWorkOrder(c.Request.Context(), workOrderNo); err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.Success(c, nil)
+}
+
 func (h *ProductionHandler) ListWorkOrders(c *gin.Context) {
 	var req dto.WorkOrderListReq
 	if err := c.ShouldBindQuery(&req); err != nil {

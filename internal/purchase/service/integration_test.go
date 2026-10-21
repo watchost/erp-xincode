@@ -398,3 +398,65 @@ func TestPurchaseFlow_DecimalPrecisionOneTenthPlusTwoTenths(t *testing.T) {
 		t.Fatalf("成本卡合计应精确为 0.30（18,4 列回读），实际 %v", costTotal)
 	}
 }
+
+// 多条件查询：单号/供应商/状态/创建日期范围组合过滤。
+func TestListOrders_MultiCondition(t *testing.T) {
+	gdb := testsupport.NewDB(t)
+	fx := testsupport.CreateFixture(t, gdb, "qry")
+	wh := testsupport.NewWarehouseService(gdb)
+	fin := testsupport.NewFinanceService(gdb)
+	deps := testsupport.NewPurchaseService(gdb, wh, fin)
+	ctx := testsupport.CtxWithUser(1)
+
+	// 一张草稿单 + 一张已审批单
+	draftVO, err := deps.Service.CreateOrder(ctx, purchaseDto.CreatePurchaseOrderReq{
+		SupplierID: fx.Supplier.ID,
+		Items:      []purchaseDto.PurchaseOrderItemReq{{MaterialID: fx.Material.ID, Qty: testsupport.D("1"), Price: testsupport.D("10")}},
+	})
+	if err != nil {
+		t.Fatalf("创建草稿单失败: %v", err)
+	}
+	approvedNo := createApprovedOrder(t, deps, fx, testsupport.D("2"), testsupport.D("20"))
+
+	today := time.Now().Format("2006-01-02")
+	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	tomorrow := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
+
+	list := func(req purchaseDto.PurchaseOrderListReq) int64 {
+		_, total, err := deps.Service.ListOrders(ctx, req)
+		if err != nil {
+			t.Fatalf("查询订单失败: %v", err)
+		}
+		return total
+	}
+
+	page := func(req purchaseDto.PurchaseOrderListReq) purchaseDto.PurchaseOrderListReq {
+		req.Page, req.PageSize = 1, 20
+		return req
+	}
+
+	if n := list(page(purchaseDto.PurchaseOrderListReq{OrderNo: draftVO.OrderNo})); n != 1 {
+		t.Fatalf("按单号查询应命中 1，实际 %d", n)
+	}
+	if n := list(page(purchaseDto.PurchaseOrderListReq{SupplierID: fx.Supplier.ID})); n != 2 {
+		t.Fatalf("按供应商查询应命中 2，实际 %d", n)
+	}
+	if n := list(page(purchaseDto.PurchaseOrderListReq{Status: purchaseService.OrderStatusDraft})); n != 1 {
+		t.Fatalf("按状态(草稿)查询应命中 1，实际 %d", n)
+	}
+	if n := list(page(purchaseDto.PurchaseOrderListReq{Status: purchaseService.OrderStatusApproved})); n != 1 {
+		t.Fatalf("按状态(已审批)查询应命中 1，实际 %d", n)
+	}
+	if n := list(page(purchaseDto.PurchaseOrderListReq{DateFrom: yesterday, DateTo: today})); n != 2 {
+		t.Fatalf("日期范围含今天应命中 2，实际 %d", n)
+	}
+	if n := list(page(purchaseDto.PurchaseOrderListReq{DateFrom: tomorrow})); n != 0 {
+		t.Fatalf("起始日期为明天应命中 0，实际 %d", n)
+	}
+	if n := list(page(purchaseDto.PurchaseOrderListReq{DateTo: yesterday})); n != 0 {
+		t.Fatalf("截止日期为昨天应命中 0，实际 %d", n)
+	}
+	if n := list(page(purchaseDto.PurchaseOrderListReq{OrderNo: approvedNo, Status: purchaseService.OrderStatusApproved, DateFrom: today, DateTo: today})); n != 1 {
+		t.Fatalf("组合条件应命中 1，实际 %d", n)
+	}
+}

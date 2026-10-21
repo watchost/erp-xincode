@@ -220,6 +220,7 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 			production.GET("/work-orders", middleware.RequirePermission(PermProductionWOView), d.Production.ListWorkOrders)
 			production.POST("/work-orders", middleware.RequirePermission(PermProductionWOCreate), d.Production.CreateWorkOrder)
 			production.POST("/work-orders/:work_order_no/release", middleware.RequirePermission(PermProductionWOCreate), d.Production.ReleaseWorkOrder)
+			production.POST("/work-orders/:work_order_no/close", middleware.RequirePermission(PermProductionWOCreate), d.Production.CloseWorkOrder)
 			production.POST("/material-issue/scan", middleware.RequirePermission(PermProductionOutbound), d.Production.MaterialIssueScan)
 			production.POST("/receipt", middleware.RequirePermission(PermProductionReceipt), d.Production.ProductionReceipt)
 			production.POST("/bom", middleware.RequirePermission(PermProductionWOCreate), d.Production.CreateBom)
