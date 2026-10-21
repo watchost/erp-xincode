@@ -101,7 +101,7 @@ func TestPurchaseFlow_PartialThenComplete(t *testing.T) {
 	}
 
 	var entries int64
-	countWhere(t, gdb, "fin_voucher", &entries, "biz_type = ? AND biz_no = ?", "purchase_inbound", res.InboundNo)
+	countWhere(t, gdb, "fin_voucher_entry", &entries, "biz_type = ? AND biz_no = ?", "purchase_inbound", res.InboundNo)
 	if entries != 2 {
 		t.Fatalf("每次入库应生成借贷 2 条分录，实际 %d", entries)
 	}
@@ -176,7 +176,7 @@ func TestPurchaseInbound_OverReceiptRollsBack(t *testing.T) {
 		t.Fatalf("超收后收货数量应为 0: %v", items[0].ReceivedQty)
 	}
 	var n int64
-	countWhere(t, gdb, "fin_voucher", &n, "1=1")
+	countWhere(t, gdb, "fin_voucher_entry", &n, "1=1")
 	if n != 0 {
 		t.Fatal("超收回滚后不得有财务分录")
 	}

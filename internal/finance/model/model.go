@@ -19,8 +19,38 @@ type FinCostCard struct {
 	CreatedAt  time.Time       `json:"created_at"`
 }
 
+// FinAccount 会计科目（树形，category：1资产 2负债 3权益 4成本 5收入 6费用；direction：1借 2贷）。
+type FinAccount struct {
+	ID        int64     `json:"id"`
+	Code      string    `json:"code"`
+	Name      string    `json:"name"`
+	ParentID  *int64    `json:"parent_id"`
+	Level     int       `json:"level"`
+	Category  int       `json:"category"`
+	Direction int       `json:"direction"`
+	IsLeaf    bool      `json:"is_leaf"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// FinVoucher 记账凭证主表：一张凭证一个凭证号，期间归属用于报表与期末结转。
+type FinVoucher struct {
+	ID          int64           `json:"id"`
+	VoucherNo   string          `json:"voucher_no"`
+	Period      string          `json:"period"` // YYYY-MM
+	Summary     string          `json:"summary"`
+	BizType     string          `json:"biz_type"`
+	BizNo       string          `json:"biz_no"`
+	DebitTotal  decimal.Decimal `json:"debit_total"`
+	CreditTotal decimal.Decimal `json:"credit_total"`
+	PostedAt    time.Time       `json:"posted_at"`
+	CreatedBy   int64           `json:"created_by"`
+	CreatedAt   time.Time       `json:"created_at"`
+}
+
+// FinAccountEntry 凭证明细行（分录），挂在 FinVoucher 主表下。
 type FinAccountEntry struct {
 	ID           int64           `json:"id"`
+	VoucherID    int64           `json:"voucher_id"`
 	EntryNo      string          `json:"entry_no"`
 	AccountCode  string          `json:"account_code"`
 	AccountName  string          `json:"account_name"`
@@ -46,5 +76,7 @@ type FinBudget struct {
 }
 
 func (FinCostCard) TableName() string     { return "fin_cost" }
-func (FinAccountEntry) TableName() string { return "fin_voucher" }
+func (FinAccount) TableName() string      { return "fin_account" }
+func (FinVoucher) TableName() string      { return "fin_voucher" }
+func (FinAccountEntry) TableName() string { return "fin_voucher_entry" }
 func (FinBudget) TableName() string       { return "fin_budget" }

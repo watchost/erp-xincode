@@ -45,6 +45,7 @@ var businessTables = []string{
 	"pur_purchase_order_item",
 	"pur_purchase_order",
 	"fin_cost",
+	"fin_voucher_entry",
 	"fin_voucher",
 	"fin_budget",
 	"prod_production_receipt",
@@ -57,6 +58,8 @@ var businessTables = []string{
 	"mdm_warehouse",
 	"mdm_supplier",
 	"mdm_material",
+	"mdm_customer",
+	"mdm_material_category",
 }
 
 var (
@@ -264,6 +267,8 @@ func NewFinanceService(gdb *gorm.DB) *financeService.FinanceService {
 		db.NewTxManager(gdb),
 		financeRepo.NewCostCardRepository(gdb),
 		financeRepo.NewAccountEntryRepository(gdb),
+		financeRepo.NewVoucherRepository(gdb),
+		financeRepo.NewAccountRepository(gdb),
 		financeRepo.NewBudgetRepository(gdb),
 		mdmRepo.NewMaterialRepository(gdb),
 		bizno.NewGenerator(nil),

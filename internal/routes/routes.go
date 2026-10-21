@@ -41,6 +41,7 @@ const (
 	PermFinanceCost    = "finance:cost"
 	PermFinanceReports = "finance:reports"
 	PermFinanceBudget  = "finance:budget"
+	PermFinanceAccount = "finance:account"
 
 	PermMDMMaterial  = "mdm:material"
 	PermMDMSupplier  = "mdm:supplier"
@@ -234,6 +235,18 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 			finance.GET("/financial-report", middleware.RequirePermission(PermFinanceReports), d.Finance.GetFinancialReport)
 			finance.GET("/budgets", middleware.RequirePermission(PermFinanceBudget), d.Finance.ListBudgets)
 			finance.POST("/budgets", middleware.RequirePermission(PermFinanceBudget), d.Finance.CreateBudget)
+
+			finance.GET("/accounts/tree", middleware.RequirePermission(PermFinanceAccount), d.Finance.ListAccountTree)
+			finance.POST("/accounts", middleware.RequirePermission(PermFinanceAccount), d.Finance.CreateAccount)
+			finance.PUT("/accounts/:id", middleware.RequirePermission(PermFinanceAccount), d.Finance.UpdateAccount)
+			finance.DELETE("/accounts/:id", middleware.RequirePermission(PermFinanceAccount), d.Finance.DeleteAccount)
+
+			finance.GET("/vouchers", middleware.RequirePermission(PermFinanceReports), d.Finance.ListVouchers)
+			finance.GET("/vouchers/:id", middleware.RequirePermission(PermFinanceReports), d.Finance.GetVoucher)
+			finance.POST("/period-close", middleware.RequirePermission(PermFinanceAccount), d.Finance.ClosePeriod)
+
+			finance.GET("/income-statement", middleware.RequirePermission(PermFinanceReports), d.Finance.GetIncomeStatement)
+			finance.GET("/cash-flow", middleware.RequirePermission(PermFinanceReports), d.Finance.GetCashFlow)
 		}
 
 		dashboard := api.Group("/dashboard")

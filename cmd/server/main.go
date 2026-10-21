@@ -163,8 +163,10 @@ func main() {
 	financeCostCardRepo := financeRepository.NewCostCardRepository(dbConn)
 	financeAccountEntryRepo := financeRepository.NewAccountEntryRepository(dbConn)
 	financeBudgetRepo := financeRepository.NewBudgetRepository(dbConn)
+	financeVoucherRepo := financeRepository.NewVoucherRepository(dbConn)
+	financeAccountRepo := financeRepository.NewAccountRepository(dbConn)
 	financeSvc := financeService.NewFinanceService(
-		txManager, financeCostCardRepo, financeAccountEntryRepo, financeBudgetRepo,
+		txManager, financeCostCardRepo, financeAccountEntryRepo, financeVoucherRepo, financeAccountRepo, financeBudgetRepo,
 		mdmMaterialRepo, numberGen,
 	)
 	financeH := financeHandler.NewFinanceHandler(financeSvc)

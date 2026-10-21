@@ -72,6 +72,8 @@ type PostingInput struct {
 	BizType     string          // 业务事件类型，见 BizType* 常量
 	BizNo       string          // 业务单号（入库单号/出库单号），用于溯源
 	Description string          // 摘要
+	Period      string          // 会计期间 YYYY-MM；空 = 过账当天所属期间（期末结转时传入被结转期间）
+	CreatedBy   int64           // 过账人 user_id（可为 0）
 	Lines       []PostingLine   // 借贷分录行，必须借贷平衡
 	CostCards   []CostCardInput // 同事务写入的成本卡（可为空）
 }
@@ -114,14 +116,43 @@ func (s *FinanceService) PostTx(ctx context.Context, tx *gorm.DB, in PostingInpu
 		return errors.New(60005, 500, "记账凭证金额必须大于零")
 	}
 
-	// 一张凭证一个凭证号，每条分录行用「凭证号-行号」作为唯一 entry_no。
+	// 凭证主表：一张凭证一个凭证号，期间归属决定报表取数窗口；
+	// 分录行用「凭证号-行号」作为唯一 entry_no 并回挂 voucher_id。
 	voucherNo := s.generateVoucherNo(ctx)
 	now := time.Now()
+	period := in.Period
+	if period == "" {
+		period = now.Format("2006-01")
+	}
+	voucher := model.FinVoucher{
+		VoucherNo:   voucherNo,
+		Period:      period,
+		Summary:     in.Description,
+		BizType:     in.BizType,
+		BizNo:       in.BizNo,
+		DebitTotal:  debitSum,
+		CreditTotal: creditSum,
+		PostedAt:    now,
+		CreatedBy:   in.CreatedBy,
+		CreatedAt:   now,
+	}
+	if err := s.voucherRepo.Create(tx, &voucher); err != nil {
+		return err
+	}
+
 	for i, line := range lines {
+		accountName := line.AccountName
+		if accountName == "" {
+			// 科目名称缺省时从科目表带出，保证分录可读性。
+			if acc, err := s.accountRepo.FindByCode(line.AccountCode); err == nil && acc != nil {
+				accountName = acc.Name
+			}
+		}
 		entry := model.FinAccountEntry{
+			VoucherID:    voucher.ID,
 			EntryNo:      fmt.Sprintf("%s-%02d", voucherNo, i+1),
 			AccountCode:  line.AccountCode,
-			AccountName:  line.AccountName,
+			AccountName:  accountName,
 			DebitAmount:  line.Debit,
 			CreditAmount: line.Credit,
 			Balance:      line.Debit.Sub(line.Credit),

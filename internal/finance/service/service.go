@@ -24,6 +24,8 @@ type FinanceService struct {
 	txManager        *db.TxManager
 	costCardRepo     repository.CostCardRepository
 	accountEntryRepo repository.AccountEntryRepository
+	voucherRepo      repository.VoucherRepository
+	accountRepo      repository.AccountRepository
 	budgetRepo       repository.BudgetRepository
 	materialRepo     mdmRepo.MaterialRepository
 	numbers          *bizno.Generator
@@ -33,6 +35,8 @@ func NewFinanceService(
 	txManager *db.TxManager,
 	costCardRepo repository.CostCardRepository,
 	accountEntryRepo repository.AccountEntryRepository,
+	voucherRepo repository.VoucherRepository,
+	accountRepo repository.AccountRepository,
 	budgetRepo repository.BudgetRepository,
 	materialRepo mdmRepo.MaterialRepository,
 	numbers *bizno.Generator,
@@ -41,6 +45,8 @@ func NewFinanceService(
 		txManager:        txManager,
 		costCardRepo:     costCardRepo,
 		accountEntryRepo: accountEntryRepo,
+		voucherRepo:      voucherRepo,
+		accountRepo:      accountRepo,
 		budgetRepo:       budgetRepo,
 		materialRepo:     materialRepo,
 		numbers:          numbers,
@@ -161,34 +167,37 @@ func (s *FinanceService) GetFinancialReport(ctx context.Context, period string) 
 			year, month = t.Year(), int(t.Month())
 		}
 	}
-	periodStart := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.Local)
-	periodEnd := periodStart.AddDate(0, 1, 0) // 次月 1 日，区间左闭右开
+	// 期间区间按凭证主表 period 过滤（YYYY-MM 字典序即时间序），
+	// 期末结转凭证因此归属到被结转期间而不是录入当天。
+	periodFrom := fmt.Sprintf("%04d-%02d", year, month)
+	next := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.Local).AddDate(0, 1, 0)
+	periodTo := next.Format("2006-01") // 次月，区间左闭右开
 
 	// 资产负债表（时点，期末累计）
-	inventoryAssets, err := s.accountEntryRepo.SumBalance("1", nil, &periodEnd)
+	inventoryAssets, err := s.accountEntryRepo.SumBalance("1", nil, &periodTo)
 	if err != nil {
 		return nil, err
 	}
-	wipAssets, err := s.accountEntryRepo.SumBalance("5", nil, &periodEnd) // 生产成本借余=在产品
+	wipAssets, err := s.accountEntryRepo.SumBalance("5", nil, &periodTo) // 生产成本借余=在产品
 	if err != nil {
 		return nil, err
 	}
 	totalAssets := inventoryAssets.Add(wipAssets)
 
-	liabilityNet, err := s.accountEntryRepo.SumBalance("2", nil, &periodEnd)
+	liabilityNet, err := s.accountEntryRepo.SumBalance("2", nil, &periodTo)
 	if err != nil {
 		return nil, err
 	}
 	totalLiabilities := liabilityNet.Neg() // 负债为贷方余额
 
 	// 利润表（本月期间发生额）
-	revenueNet, err := s.accountEntryRepo.SumBalance("60", &periodStart, &periodEnd)
+	revenueNet, err := s.accountEntryRepo.SumBalance("60", &periodFrom, &periodTo)
 	if err != nil {
 		return nil, err
 	}
 	totalRevenue := revenueNet.Neg() // 收入为贷方发生
 
-	totalCost, err := s.accountEntryRepo.SumBalance("64", &periodStart, &periodEnd)
+	totalCost, err := s.accountEntryRepo.SumBalance("64", &periodFrom, &periodTo)
 	if err != nil {
 		return nil, err
 	}
