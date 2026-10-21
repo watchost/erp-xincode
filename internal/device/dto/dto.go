@@ -2,7 +2,11 @@
 
 package dto
 
-import "github.com/shopspring/decimal"
+import (
+	"encoding/json"
+
+	"github.com/shopspring/decimal"
+)
 
 type DeviceRegisterReq struct {
 	DeviceCode string `json:"device_code" binding:"required"`
@@ -35,7 +39,35 @@ type DeviceVO struct {
 	Status        int    `json:"status"`
 	StatusName    string `json:"status_name"`
 	LastHeartbeat string `json:"last_heartbeat"`
-	CreatedAt     string `json:"created_at"`
+	APIKey        string `json:"api_key,omitempty"`
+	// APISecret 仅在注册响应中返回一次，服务端只存 SHA256 摘要。
+	APISecret string `json:"api_secret,omitempty"`
+	CreatedAt string `json:"created_at"`
+}
+
+// DeviceCommandReq 下发指令。
+type DeviceCommandReq struct {
+	MsgType string          `json:"msg_type" binding:"required"` // command/print
+	Payload json.RawMessage `json:"payload"`
+}
+
+// DeviceCommandVO 指令下发结果。
+type DeviceCommandVO struct {
+	MessageID string `json:"message_id"`
+	Status    int    `json:"status"` // 1=已确认 2=失败/超时
+	Acked     bool   `json:"acked"`
+}
+
+// DeviceMessageVO 消息流水。
+type DeviceMessageVO struct {
+	ID        int64           `json:"id"`
+	MessageID string          `json:"message_id"`
+	Direction int             `json:"direction"`
+	MsgType   string          `json:"msg_type"`
+	Payload   json.RawMessage `json:"payload"`
+	Status    int             `json:"status"`
+	CreatedAt string          `json:"created_at"`
+	AckedAt   string          `json:"acked_at,omitempty"`
 }
 
 type DeviceListReq struct {

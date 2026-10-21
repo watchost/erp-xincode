@@ -83,3 +83,34 @@ func (h *DeviceHandler) GetByCode(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, response.OK(vo))
 }
+
+// SendCommand 下发指令并等待设备 ack。
+func (h *DeviceHandler) SendCommand(c *gin.Context) {
+	deviceCode := c.Param("device_code")
+	var req dto.DeviceCommandReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, response.Err(10005, "参数错误: "+err.Error()))
+		return
+	}
+	vo, err := h.deviceService.SendCommand(c.Request.Context(), deviceCode, req)
+	if err != nil {
+		c.JSON(http.StatusOK, response.FromError(err))
+		return
+	}
+	c.JSON(http.StatusOK, response.OK(vo))
+}
+
+// ListMessages 设备消息流水。
+func (h *DeviceHandler) ListMessages(c *gin.Context) {
+	deviceCode := c.Param("device_code")
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	direction, _ := strconv.Atoi(c.Query("direction"))
+
+	list, total, err := h.deviceService.ListMessages(c.Request.Context(), deviceCode, direction, page, pageSize)
+	if err != nil {
+		c.JSON(http.StatusOK, response.FromError(err))
+		return
+	}
+	c.JSON(http.StatusOK, response.Page(list, total, page, pageSize))
+}

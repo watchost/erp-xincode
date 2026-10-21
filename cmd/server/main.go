@@ -55,6 +55,7 @@ import (
 	dashboardHandler "erp-system/internal/dashboard/handler"
 	dashboardService "erp-system/internal/dashboard/service"
 
+	deviceGateway "erp-system/internal/device/gateway"
 	deviceHandler "erp-system/internal/device/handler"
 	deviceRepository "erp-system/internal/device/repository"
 	deviceService "erp-system/internal/device/service"
@@ -209,7 +210,10 @@ func main() {
 
 	// 设备模块
 	deviceRepo := deviceRepository.NewDeviceRepository(dbConn)
-	deviceSvc := deviceService.NewDeviceService(deviceRepo)
+	deviceMsgRepo := deviceRepository.NewDeviceMessageRepository(dbConn)
+	deviceHub := deviceGateway.NewHub(deviceRepo, deviceMsgRepo)
+	deviceSvc := deviceService.NewDeviceService(deviceRepo, deviceMsgRepo)
+	deviceSvc.SetHub(deviceHub)
 	deviceH := deviceHandler.NewDeviceHandler(deviceSvc)
 
 	// LLM模块
@@ -336,6 +340,42 @@ func main() {
 		}
 	}()
 
+	// 设备接入 WebSocket 网关：独立端口 + HMAC 签名鉴权（docs/development/features/device.md）。
+	wsPort := viper.GetInt("device.websocket_port")
+	heartbeatTimeout := viper.GetDuration("device.heartbeat_timeout")
+	if heartbeatTimeout <= 0 {
+		heartbeatTimeout = 60 * time.Second
+	}
+	wsSrv := &http.Server{
+		Addr:              fmt.Sprintf("%s:%d", host, wsPort),
+		Handler:           http.HandlerFunc(deviceHub.HandleWS),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	wsStop := make(chan struct{})
+	if wsPort > 0 {
+		go func() {
+			fmt.Printf("Device gateway (ws) starting on port %d...\n", wsPort)
+			if err := wsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Fatalf("device gateway error: %v", err)
+			}
+		}()
+		// 心跳超时清扫：每 10s 把超时无心跳的在线设备置为离线。
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					if _, err := deviceHub.SweepOffline(heartbeatTimeout); err != nil {
+						logger.Log(context.Background()).Warn("device heartbeat sweep failed", "error", err)
+					}
+				case <-wsStop:
+					return
+				}
+			}
+		}()
+	}
+
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
@@ -343,6 +383,13 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	close(wsStop)
+	deviceHub.CloseAll()
+	if wsPort > 0 {
+		if err := wsSrv.Shutdown(ctx); err != nil {
+			log.Printf("device gateway shutdown failed: %v", err)
+		}
+	}
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Printf("graceful shutdown failed: %v", err)
 	}

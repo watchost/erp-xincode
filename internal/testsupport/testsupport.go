@@ -48,6 +48,8 @@ var businessTables = []string{
 	"fin_voucher_entry",
 	"fin_voucher",
 	"fin_budget",
+	"dev_device_message",
+	"dev_device",
 	"prod_production_receipt",
 	"prod_production_outbound",
 	"prod_work_order_bom",

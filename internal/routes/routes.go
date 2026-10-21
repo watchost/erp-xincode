@@ -263,6 +263,8 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 			device.POST("/heartbeat", d.Device.Heartbeat)
 			device.GET("/list", d.Device.List)
 			device.GET("/:device_code", d.Device.GetByCode)
+			device.POST("/:device_code/command", d.Device.SendCommand)
+			device.GET("/:device_code/messages", d.Device.ListMessages)
 		}
 
 		llm := api.Group("/llm", middleware.RequirePermission(PermLLMChat))
