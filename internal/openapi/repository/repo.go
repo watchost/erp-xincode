@@ -28,6 +28,15 @@ type WebhookRepository interface {
 	ListByEvent(event string) ([]model.OpenWebhook, error)
 }
 
+// WebhookDeliveryRepository 投递记录（worker 取待投递、推进状态）。
+type WebhookDeliveryRepository interface {
+	Create(d *model.OpenWebhookDelivery) error
+	Update(d *model.OpenWebhookDelivery) error
+	// ListDuePending 取 status=0 且 next_retry_at<=now 的投递，按创建时间升序。
+	ListDuePending(limit int) ([]model.OpenWebhookDelivery, error)
+	ListByWebhook(webhookID int64, page, pageSize int) ([]model.OpenWebhookDelivery, int64, error)
+}
+
 type SyncLogRepository interface {
 	Create(log *model.OpenSyncLog) error
 	FindByID(id int64) (*model.OpenSyncLog, error)
@@ -135,6 +144,42 @@ func (r *webhookRepo) ListByEvent(event string) ([]model.OpenWebhook, error) {
 		return nil, err
 	}
 	return webhooks, nil
+}
+
+type webhookDeliveryRepo struct {
+	db *gorm.DB
+}
+
+func NewWebhookDeliveryRepository(db *gorm.DB) WebhookDeliveryRepository {
+	return &webhookDeliveryRepo{db: db}
+}
+
+func (r *webhookDeliveryRepo) Create(d *model.OpenWebhookDelivery) error {
+	return r.db.Create(d).Error
+}
+
+func (r *webhookDeliveryRepo) Update(d *model.OpenWebhookDelivery) error {
+	return r.db.Save(d).Error
+}
+
+func (r *webhookDeliveryRepo) ListDuePending(limit int) ([]model.OpenWebhookDelivery, error) {
+	var list []model.OpenWebhookDelivery
+	err := r.db.Where("status = ? AND next_retry_at <= now()", model.DeliveryStatusPending).
+		Order("created_at ASC").Limit(limit).Find(&list).Error
+	return list, err
+}
+
+func (r *webhookDeliveryRepo) ListByWebhook(webhookID int64, page, pageSize int) ([]model.OpenWebhookDelivery, int64, error) {
+	var list []model.OpenWebhookDelivery
+	var total int64
+	query := r.db.Model(&model.OpenWebhookDelivery{}).Where("webhook_id = ?", webhookID)
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if err := query.Order("created_at DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&list).Error; err != nil {
+		return nil, 0, err
+	}
+	return list, total, nil
 }
 
 type syncLogRepo struct {

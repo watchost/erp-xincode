@@ -22,9 +22,34 @@ type OpenToken struct {
 	ClientID     string    `json:"client_id"`
 	AccessToken  string    `json:"access_token"`
 	RefreshToken string    `json:"refresh_token"`
+	Scope        string    `json:"scope"`
+	Revoked      int       `json:"revoked"`
 	ExpiresAt    time.Time `json:"expires_at"`
 	CreatedAt    time.Time `json:"created_at"`
 }
+
+// OpenWebhookDelivery webhook 投递记录（重试 + 死信）。
+type OpenWebhookDelivery struct {
+	ID          int64      `json:"id"`
+	WebhookID   int64      `json:"webhook_id"`
+	Event       string     `json:"event"`
+	Payload     []byte     `json:"payload" gorm:"type:jsonb"`
+	Status      int        `json:"status"` // 0=待投递 1=成功 2=死信
+	Attempts    int        `json:"attempts"`
+	NextRetryAt time.Time  `json:"next_retry_at"`
+	LastError   string     `json:"last_error"`
+	CreatedAt   time.Time  `json:"created_at"`
+	DeliveredAt *time.Time `json:"delivered_at"`
+}
+
+const (
+	DeliveryStatusPending = 0
+	DeliveryStatusSuccess = 1
+	DeliveryStatusDead    = 2
+)
+
+// DeliveryMaxAttempts 重试上限，耗尽进入死信。
+const DeliveryMaxAttempts = 5
 
 type OpenWebhook struct {
 	ID        int64     `json:"id"`
@@ -46,7 +71,8 @@ type OpenSyncLog struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func (OpenClient) TableName() string  { return "open_client" }
-func (OpenToken) TableName() string   { return "open_token" }
-func (OpenWebhook) TableName() string { return "open_webhook" }
-func (OpenSyncLog) TableName() string { return "open_sync_log" }
+func (OpenClient) TableName() string          { return "open_client" }
+func (OpenToken) TableName() string           { return "open_token" }
+func (OpenWebhook) TableName() string         { return "open_webhook" }
+func (OpenSyncLog) TableName() string         { return "open_sync_log" }
+func (OpenWebhookDelivery) TableName() string { return "open_webhook_delivery" }

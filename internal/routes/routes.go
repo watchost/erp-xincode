@@ -12,6 +12,7 @@ import (
 	llmHandler "erp-system/internal/llm/handler"
 	mdmHandler "erp-system/internal/mdm/handler"
 	openapiHandler "erp-system/internal/openapi/handler"
+	openapiMiddleware "erp-system/internal/openapi/middleware"
 	"erp-system/internal/pkg/middleware"
 	productionHandler "erp-system/internal/production/handler"
 	purchaseHandler "erp-system/internal/purchase/handler"
@@ -68,6 +69,7 @@ type Deps struct {
 	LoginLimit   gin.HandlerFunc               // 可选：登录/验证码限流中间件，为 nil 时不限流
 	ForceChange  middleware.ForceChangeChecker // 可选：强制改密状态查询
 	Audit        gin.HandlerFunc               // 可选：写操作审计中间件，为 nil 时不审计
+	OpenAPIAuth  gin.HandlerFunc               // 可选：OpenAPI Bearer 校验，为 nil 时不注册资源 API
 	IAM          *iamHandler.IAMHandler
 	MDM          *mdmHandler.MDMHandler
 	Warehouse    *warehouseHandler.WarehouseHandler
@@ -105,6 +107,19 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 	// OpenAPI 对外网关：OAuth2 取 token 不走内部 JWT
 	r.POST("/api/v1/oauth/token", d.OpenAPI.GetToken)
 	r.POST("/api/v1/oauth/refresh", d.OpenAPI.RefreshToken)
+
+	// 标准资源 API：独立 Bearer token 校验 + scope 检查（client_id 从 token 提取）。
+	if d.OpenAPIAuth != nil {
+		v1 := r.Group("/openapi/v1", d.OpenAPIAuth)
+		{
+			v1.GET("/materials", openapiMiddleware.RequireScope("read"), d.OpenAPI.ListMaterials)
+			v1.GET("/inventory", openapiMiddleware.RequireScope("read"), d.OpenAPI.ListInventory)
+			v1.GET("/orders/:order_no", openapiMiddleware.RequireScope("read"), d.OpenAPI.GetOrder)
+			v1.POST("/orders", openapiMiddleware.RequireScope("write"), d.OpenAPI.CreateOrder)
+			v1.POST("/webhooks", openapiMiddleware.RequireScope("write"), d.OpenAPI.CreateWebhook)
+			v1.POST("/sync", openapiMiddleware.RequireScope("write"), d.OpenAPI.Sync)
+		}
+	}
 
 	api := r.Group("/api/v1")
 	api.Use(middleware.JWTAuth(d.JWTSecret, d.JWTBlacklist))
@@ -284,11 +299,11 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 			prompts.DELETE("/:id", d.LLM.DeletePromptTemplate)
 		}
 
+		// 管理端：客户端生命周期管理（webhook/sync 走 /openapi/v1 Bearer 通道）。
 		openapi := api.Group("/openapi", middleware.RequirePermission(PermOpenAPIAdmin))
 		{
-			openapi.POST("/webhooks", d.OpenAPI.CreateWebhook)
-			openapi.POST("/sync", d.OpenAPI.Sync)
 			openapi.GET("/clients", d.OpenAPI.ListClients)
+			openapi.POST("/clients", d.OpenAPI.CreateClient)
 		}
 	}
 }

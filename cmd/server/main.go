@@ -66,8 +66,10 @@ import (
 	llmService "erp-system/internal/llm/service"
 
 	openapiHandler "erp-system/internal/openapi/handler"
+	openapiMiddleware "erp-system/internal/openapi/middleware"
 	openapiRepository "erp-system/internal/openapi/repository"
 	openapiService "erp-system/internal/openapi/service"
+	openapiWorkerPkg "erp-system/internal/openapi/worker"
 )
 
 // @title ERP System API
@@ -227,9 +229,21 @@ func main() {
 	openapiClientRepo := openapiRepository.NewClientRepository(dbConn)
 	openapiTokenRepo := openapiRepository.NewTokenRepository(dbConn)
 	openapiWebhookRepo := openapiRepository.NewWebhookRepository(dbConn)
+	openapiDeliveryRepo := openapiRepository.NewWebhookDeliveryRepository(dbConn)
 	openapiSyncLogRepo := openapiRepository.NewSyncLogRepository(dbConn)
-	openapiSvc := openapiService.NewOpenAPIService(openapiClientRepo, openapiTokenRepo, openapiWebhookRepo, openapiSyncLogRepo)
-	openapiH := openapiHandler.NewOpenAPIHandler(openapiSvc)
+	openapiSvc := openapiService.NewOpenAPIService(openapiClientRepo, openapiTokenRepo, openapiWebhookRepo, openapiDeliveryRepo, openapiSyncLogRepo)
+	openapiResourceSvc := openapiService.NewResourceService(
+		dbConn, txManager,
+		purchaseOrderRepo,
+		mdmSupplierRepo,
+		mdmMaterialRepo,
+		numberGen,
+	)
+	openapiH := openapiHandler.NewOpenAPIHandler(openapiSvc, openapiResourceSvc)
+	// webhook 异步投递 worker（重试 + 死信）。
+	openapiWorker := openapiWorkerPkg.NewWorker(openapiDeliveryRepo, openapiWebhookRepo)
+	workerCtx, workerStop := context.WithCancel(context.Background())
+	go openapiWorker.Run(workerCtx)
 
 	// 路由注册
 	mode := viper.GetString("server.mode")
@@ -315,6 +329,7 @@ func main() {
 		Device:       deviceH,
 		LLM:          llmH,
 		OpenAPI:      openapiH,
+		OpenAPIAuth:  openapiMiddleware.BearerAuth(openapiSvc.ValidateAccessToken),
 	})
 
 	host := viper.GetString("server.host")
@@ -385,6 +400,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	close(wsStop)
+	workerStop()
 	deviceHub.CloseAll()
 	if wsPort > 0 {
 		if err := wsSrv.Shutdown(ctx); err != nil {
