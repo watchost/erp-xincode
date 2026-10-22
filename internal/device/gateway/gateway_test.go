@@ -234,6 +234,42 @@ func TestGateway_DuplicateConnectKicksOld(t *testing.T) {
 	}
 }
 
+// 心跳超时清扫：心跳新鲜的设备保持在线，超时的被置为离线。
+func TestGateway_SweepOffline(t *testing.T) {
+	f := setupDevice(t)
+
+	c := f.dial(t, 0)
+	defer c.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for !f.hub.IsOnline(f.vo.DeviceCode) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// 心跳新鲜：清扫不误伤。
+	n, err := f.hub.SweepOffline(60 * time.Second)
+	if err != nil || n != 0 {
+		t.Fatalf("心跳新鲜不应被清扫: n=%d err=%v", n, err)
+	}
+
+	// 把最后心跳拨回 2 分钟前，再清扫 → 置离线。
+	if err := f.gdb.Model(&model.DevDevice{}).
+		Where("device_code = ?", f.vo.DeviceCode).
+		Update("last_heartbeat", time.Now().Add(-2*time.Minute)).Error; err != nil {
+		t.Fatalf("回拨心跳失败: %v", err)
+	}
+	n, err = f.hub.SweepOffline(60 * time.Second)
+	if err != nil || n != 1 {
+		t.Fatalf("超时设备应被清扫 1 台: n=%d err=%v", n, err)
+	}
+	var dev model.DevDevice
+	if err := f.gdb.Where("device_code = ?", f.vo.DeviceCode).First(&dev).Error; err != nil {
+		t.Fatal(err)
+	}
+	if dev.Status != model.DeviceStatusOffline {
+		t.Fatalf("超时设备应置为离线，实际 status=%d", dev.Status)
+	}
+}
+
 // 错误签名/未知 api_key 拒绝升级。
 func TestGateway_AuthReject(t *testing.T) {
 	f := setupDevice(t)
