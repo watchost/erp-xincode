@@ -5,12 +5,14 @@ package db
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"time"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 type TxManager struct {
@@ -25,8 +27,22 @@ func (m *TxManager) WithTx(ctx context.Context, fn func(tx *gorm.DB) error) erro
 	return m.db.WithContext(ctx).Transaction(fn)
 }
 
+func NewGORMLogger() gormlogger.Interface {
+	return gormlogger.New(
+		log.New(os.Stdout, "\r\n", log.LstdFlags),
+		gormlogger.Config{
+			SlowThreshold:             200 * time.Millisecond, // §4.5 慢查询阈值 200ms
+			LogLevel:                  gormlogger.Warn,
+			IgnoreRecordNotFoundError: true,
+			Colorful:                  false,
+		},
+	)
+}
+
 func InitDB(dsn string, maxOpenConns, maxIdleConns int, connMaxLifetime time.Duration) (*gorm.DB, error) {
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
+		Logger: NewGORMLogger(),
+	})
 	if err != nil {
 		return nil, err
 	}

@@ -1,4 +1,4 @@
-.PHONY: build build-migrate run test test-it migrate-up migrate-down migrate-version lint vet vuln clean
+.PHONY: build build-migrate run test test-it cover migrate-up migrate-down migrate-version lint vet vuln clean
 
 # 数据库连接参数（可被环境变量覆盖），供迁移与集成测试使用
 DB_HOST ?= localhost
@@ -25,6 +25,10 @@ test:
 test-it:
 # 不设 TEST_DATABASE_DSN 时，testsupport 会自动为每个包创建独立测试库（需 CREATEDB 权限）
 	DB_HOST=$(DB_HOST) DB_PORT=$(DB_PORT) DB_USER=$(DB_USER) DB_PASSWORD='$(DB_PASSWORD)' go test -count=1 ./...
+
+cover:
+	go test -coverprofile=coverage.out -covermode=atomic ./...
+	go tool cover -func=coverage.out
 
 vet:
 	go vet ./...

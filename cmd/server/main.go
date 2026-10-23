@@ -22,6 +22,7 @@ import (
 	"erp-system/internal/pkg/decimalx"
 	"erp-system/internal/pkg/idemp"
 	"erp-system/internal/pkg/logger"
+	"erp-system/internal/pkg/metrics"
 	"erp-system/internal/pkg/middleware"
 	migratetool "erp-system/internal/pkg/migrate"
 	"erp-system/internal/pkg/redis"
@@ -89,6 +90,9 @@ func main() {
 	decimalx.InitGin()
 
 	dbConn := db.Init()
+	if sqlDB, err := dbConn.DB(); err == nil {
+		metrics.RegisterDBStats(sqlDB)
+	}
 
 	// 可选：启动时自动执行数据库迁移（MIGRATE_AUTO=true）。
 	// 默认关闭，生产环境建议显式执行 `erp-migrate up`（compose 中为一次性迁移任务）。
@@ -287,7 +291,7 @@ func main() {
 		gin.SetMode(mode)
 	}
 	r := gin.New()
-	r.Use(gin.Logger(), middleware.Recovery(), middleware.TraceID(), middleware.RequestMeta())
+	r.Use(gin.Logger(), middleware.Recovery(), metrics.GinMiddleware(), middleware.TraceID(), middleware.RequestMeta())
 	if origins := viper.GetStringSlice("cors.allow_origins"); len(origins) > 0 {
 		r.Use(middleware.CORS(origins))
 	}
@@ -329,6 +333,10 @@ func main() {
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "ready", "checks": checks})
 	})
+
+	// Prometheus 监控指标（公开抓取）与 pprof（内网调试）
+	r.GET("/metrics", metrics.Handler())
+	metrics.RegisterPProf(r)
 
 	// 审计落库适配：middleware.AuditEntry → iam model（接口定义在 middleware 包，避免反向依赖）。
 	auditSink := middleware.AuditSinkFunc(func(ctx context.Context, e middleware.AuditEntry) {

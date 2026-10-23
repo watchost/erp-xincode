@@ -6,6 +6,8 @@ import (
 	"context"
 
 	"github.com/sirupsen/logrus"
+
+	"erp-system/internal/pkg/auth"
 )
 
 type TraceKey struct{}
@@ -22,11 +24,20 @@ func GetTraceID(ctx context.Context) string {
 }
 
 func Log(ctx context.Context) *logrus.Entry {
-	traceID := GetTraceID(ctx)
-	if traceID != "" {
-		return logrus.WithField("trace_id", traceID)
+	entry := logrus.NewEntry(logrus.StandardLogger())
+	if ctx == nil {
+		return entry
 	}
-	return logrus.NewEntry(logrus.StandardLogger())
+	if traceID := GetTraceID(ctx); traceID != "" {
+		entry = entry.WithField("trace_id", traceID)
+	}
+	if userID := auth.UserIDFromContext(ctx); userID != 0 {
+		entry = entry.WithField("user_id", userID)
+	}
+	if tenantID := auth.TenantIDFromContext(ctx); tenantID != 0 {
+		entry = entry.WithField("tenant_id", tenantID)
+	}
+	return entry
 }
 
 func InitLogger(level, format string) {
