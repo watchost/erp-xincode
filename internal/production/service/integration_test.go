@@ -385,3 +385,74 @@ func TestCloseWorkOrder(t *testing.T) {
 		t.Fatalf("完工关闭失败: %v", err)
 	}
 }
+
+// P2 §3.6: BOM 多层递归展开与标准成本卷积计算
+func TestBom_Explosion_And_CostRollup(t *testing.T) {
+	gdb := testsupport.NewDB(t)
+	svc, _, _ := newProductionService(t, gdb)
+	ctx := testsupport.CtxWithUser(1)
+
+	// 成品 P1 由 半成品 S1 (用量 2, 损耗 0%) 组成
+	// 半成品 S1 由 原材料 M1 (用量 3, 损耗 10%) 组成
+	p1 := createProduct(t, gdb, "PROD-ROLLUP-P1")
+	s1 := createProduct(t, gdb, "PROD-ROLLUP-S1")
+	m1 := createProduct(t, gdb, "RAW-ROLLUP-M1")
+
+	// 1. 创建 S1 的 BOM (M1 * 3, 损耗 10%)
+	_, err := svc.CreateBom(ctx, productionDto.CreateBomReq{
+		ProductID: s1.ID,
+		Items: []productionDto.BomItemReq{
+			{
+				MaterialID: m1.ID,
+				Qty:        testsupport.D("3"),
+				Unit:       "kg",
+				ScrapRate:  testsupport.D("10"),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("创建 S1 BOM 失败: %v", err)
+	}
+
+	// 2. 创建 P1 的 BOM (S1 * 2, 损耗 0%)
+	_, err = svc.CreateBom(ctx, productionDto.CreateBomReq{
+		ProductID: p1.ID,
+		Items: []productionDto.BomItemReq{
+			{
+				MaterialID: s1.ID,
+				Qty:        testsupport.D("2"),
+				Unit:       "个",
+				ScrapRate:  decimal.Zero,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("创建 P1 BOM 失败: %v", err)
+	}
+
+	// 3. 递归展开 P1 BOM
+	tree, err := svc.ExplodeBom(ctx, p1.ID)
+	if err != nil {
+		t.Fatalf("递归展开 BOM 失败: %v", err)
+	}
+	if tree.MaterialID != p1.ID || len(tree.Children) != 1 {
+		t.Fatalf("顶层 BOM 展开结构错误: %+v", tree)
+	}
+	s1Node := tree.Children[0]
+	if s1Node.MaterialID != s1.ID || len(s1Node.Children) != 1 {
+		t.Fatalf("第二层 BOM 展开结构错误: %+v", s1Node)
+	}
+
+	// 4. 计算标准成本卷积（人工 50，制造费用 30）
+	rollup, err := svc.CalculateBomCostRollup(ctx, p1.ID, testsupport.D("50"), testsupport.D("30"))
+	if err != nil {
+		t.Fatalf("标准成本卷积失败: %v", err)
+	}
+	if !rollup.LaborCost.Equal(testsupport.D("50")) || !rollup.OverheadCost.Equal(testsupport.D("30")) {
+		t.Fatalf("成本费用分摊错误: %+v", rollup)
+	}
+	if !rollup.StandardCost.IsPositive() {
+		t.Fatalf("标准成本必须大于 0: %v", rollup.StandardCost)
+	}
+}
+

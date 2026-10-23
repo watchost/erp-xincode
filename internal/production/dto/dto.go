@@ -122,3 +122,46 @@ type BomItemVO struct {
 	ScrapRate    decimal.Decimal `json:"scrap_rate" binding:"decgte=0"`
 	Sequence     int             `json:"sequence"`
 }
+
+// ---- P2 §3.6 BOM 成本卷积与标准成本 DTO ----
+
+type BomExplosionNodeVO struct {
+	MaterialID   int64                `json:"material_id"`
+	MaterialCode string               `json:"material_code"`
+	MaterialName string               `json:"material_name"`
+	Unit         string               `json:"unit"`
+	BaseQty      decimal.Decimal      `json:"base_qty"`
+	ScrapRate    decimal.Decimal      `json:"scrap_rate"`
+	EffectiveQty decimal.Decimal      `json:"effective_qty"`
+	StandardCost decimal.Decimal      `json:"standard_cost"`
+	SubtotalCost decimal.Decimal      `json:"subtotal_cost"`
+	Level        int                  `json:"level"`
+	Children     []BomExplosionNodeVO `json:"children,omitempty"`
+}
+
+type BomCostRollupVO struct {
+	ProductID     int64               `json:"product_id"`
+	ProductCode   string              `json:"product_code"`
+	ProductName   string              `json:"product_name"`
+	MaterialCost  decimal.Decimal     `json:"material_cost"`
+	LaborCost     decimal.Decimal     `json:"labor_cost"`
+	OverheadCost  decimal.Decimal     `json:"overhead_cost"`
+	StandardCost  decimal.Decimal     `json:"standard_cost"`
+	ExplosionTree *BomExplosionNodeVO `json:"explosion_tree"`
+}
+
+type CostVarianceReq struct {
+	ProductID int64  `form:"product_id" binding:"required"`
+	Period    string `form:"period"`
+}
+
+type CostVarianceVO struct {
+	ProductID      int64           `json:"product_id"`
+	ProductCode    string          `json:"product_code"`
+	ProductName    string          `json:"product_name"`
+	StandardCost   decimal.Decimal `json:"standard_cost"`
+	ActualAvgCost  decimal.Decimal `json:"actual_avg_cost"`
+	VarianceAmount decimal.Decimal `json:"variance_amount"` // 实际 - 标准
+	VarianceRate   decimal.Decimal `json:"variance_rate"`   // (实际 - 标准) / 标准 * 100%
+}
+

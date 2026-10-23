@@ -324,6 +324,9 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 			production.POST("/material-issue/scan", middleware.RequirePermission(PermProductionOutbound), d.Production.MaterialIssueScan)
 			production.POST("/receipt", middleware.RequirePermission(PermProductionReceipt), d.Production.ProductionReceipt)
 			production.POST("/bom", middleware.RequirePermission(PermProductionWOCreate), d.Production.CreateBom)
+			production.GET("/bom/explode/:product_id", middleware.RequirePermission(PermProductionWOView), d.Production.ExplodeBom)
+			production.POST("/bom/cost-rollup/:product_id", middleware.RequirePermission(PermProductionWOView), d.Production.CalculateBomCostRollup)
+			production.GET("/cost-variance", middleware.RequirePermission(PermProductionWOView), d.Production.GetCostVariance)
 		}
 
 		finance := api.Group("/finance")

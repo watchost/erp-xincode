@@ -4,6 +4,7 @@ package handler
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 
 	"erp-system/internal/pkg/response"
 	"erp-system/internal/production/dto"
@@ -125,3 +126,58 @@ func (h *ProductionHandler) CreateBom(c *gin.Context) {
 	}
 	response.Created(c, vo)
 }
+
+// ----------------- P2 §3.6 BOM 成本卷积与标准成本 Handler -----------------
+
+func (h *ProductionHandler) ExplodeBom(c *gin.Context) {
+	var uri struct {
+		ProductID int64 `uri:"product_id" binding:"required"`
+	}
+	if err := c.ShouldBindUri(&uri); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+	tree, err := h.productionService.ExplodeBom(c.Request.Context(), uri.ProductID)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.Success(c, tree)
+}
+
+func (h *ProductionHandler) CalculateBomCostRollup(c *gin.Context) {
+	var uri struct {
+		ProductID int64 `uri:"product_id" binding:"required"`
+	}
+	if err := c.ShouldBindUri(&uri); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+	var req struct {
+		LaborCost    decimal.Decimal `json:"labor_cost"`
+		OverheadCost decimal.Decimal `json:"overhead_cost"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	res, err := h.productionService.CalculateBomCostRollup(c.Request.Context(), uri.ProductID, req.LaborCost, req.OverheadCost)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.Success(c, res)
+}
+
+func (h *ProductionHandler) GetCostVariance(c *gin.Context) {
+	var req dto.CostVarianceReq
+	if err := c.ShouldBindQuery(&req); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+	res, err := h.productionService.GetCostVariance(c.Request.Context(), req)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.Success(c, res)
+}
+
