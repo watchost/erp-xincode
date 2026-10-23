@@ -176,3 +176,114 @@ type CashFlowVO struct {
 	TotalOutflow decimal.Decimal `json:"total_outflow"`
 	NetCashFlow  decimal.Decimal `json:"net_cash_flow"`
 }
+
+// ---- P2 §3.5 应收应付与对账 DTO ----
+
+type CreateReceivableReq struct {
+	CustomerID int64           `json:"customer_id" binding:"required"`
+	SourceType int16           `json:"source_type"`
+	SourceNo   string          `json:"source_no"`
+	Amount     decimal.Decimal `json:"amount" binding:"decgt=0"`
+	DueAt      string          `json:"due_at" binding:"required"`
+	Period     string          `json:"period"`
+	Remark     string          `json:"remark"`
+}
+
+type ReceivableQuery struct {
+	CustomerID   int64  `form:"customer_id"`
+	ReceivableNo string `form:"receivable_no"`
+	Status       int16  `form:"status"`
+	Period       string `form:"period"`
+	Page         int    `form:"page" binding:"required,min=1"`
+	PageSize     int    `form:"page_size" binding:"required,min=1,max=100"`
+}
+
+type CreatePayableReq struct {
+	SupplierID int64           `json:"supplier_id" binding:"required"`
+	SourceType int16           `json:"source_type"`
+	SourceNo   string          `json:"source_no"`
+	Amount     decimal.Decimal `json:"amount" binding:"decgt=0"`
+	DueAt      string          `json:"due_at" binding:"required"`
+	Period     string          `json:"period"`
+	Remark     string          `json:"remark"`
+}
+
+type PayableQuery struct {
+	SupplierID int64  `form:"supplier_id"`
+	PayableNo  string `form:"payable_no"`
+	Status     int16  `form:"status"`
+	Period     string `form:"period"`
+	Page       int    `form:"page" binding:"required,min=1"`
+	PageSize   int    `form:"page_size" binding:"required,min=1,max=100"`
+}
+
+type CreateReceiptReq struct {
+	CustomerID    int64           `json:"customer_id" binding:"required"`
+	Amount        decimal.Decimal `json:"amount" binding:"decgt=0"`
+	ReceiptDate   string          `json:"receipt_date" binding:"required"`
+	PaymentMethod int16           `json:"payment_method"`
+	BankAccount   string          `json:"bank_account"`
+	Remark        string          `json:"remark"`
+}
+
+type ReceiptQuery struct {
+	CustomerID int64  `form:"customer_id"`
+	ReceiptNo  string `form:"receipt_no"`
+	Page       int    `form:"page" binding:"required,min=1"`
+	PageSize   int    `form:"page_size" binding:"required,min=1,max=100"`
+}
+
+type CreatePaymentReq struct {
+	SupplierID    int64           `json:"supplier_id" binding:"required"`
+	Amount        decimal.Decimal `json:"amount" binding:"decgt=0"`
+	PaymentDate   string          `json:"payment_date" binding:"required"`
+	PaymentMethod int16           `json:"payment_method"`
+	BankAccount   string          `json:"bank_account"`
+	Remark        string          `json:"remark"`
+}
+
+type PaymentQuery struct {
+	SupplierID int64  `form:"supplier_id"`
+	PaymentNo  string `form:"payment_no"`
+	Page       int    `form:"page" binding:"required,min=1"`
+	PageSize   int    `form:"page_size" binding:"required,min=1,max=100"`
+}
+
+type CreateSettlementReq struct {
+	SettlementType int16           `json:"settlement_type" binding:"required,oneof=1 2"` // 1=收款核销 2=付款核销
+	BillID         int64           `json:"bill_id" binding:"required"`
+	TargetID       int64           `json:"target_id" binding:"required"`
+	Amount         decimal.Decimal `json:"amount" binding:"decgt=0"`
+}
+
+type AgingQuery struct {
+	Direction  string `form:"direction" binding:"required,oneof=recv pay"` // recv=应收账龄 pay=应付账龄
+	CustomerID int64  `form:"customer_id"`
+	SupplierID int64  `form:"supplier_id"`
+	AsOfDate   string `form:"as_of_date"` // 基准日期，默认今天
+}
+
+type AgingBucketVO struct {
+	NotDue      decimal.Decimal `json:"not_due"`      // 未到期
+	Days0To30   decimal.Decimal `json:"days_0_30"`    // 0-30天
+	Days31To60  decimal.Decimal `json:"days_31_60"`   // 31-60天
+	Days61To90  decimal.Decimal `json:"days_61_90"`   // 61-90天
+	Days91To180 decimal.Decimal `json:"days_91_180"`  // 91-180天
+	Days180Plus decimal.Decimal `json:"days_180_plus"` // 180天以上
+	TotalAmount decimal.Decimal `json:"total_amount"` // 合计待结清金额
+}
+
+type AgingPartnerItemVO struct {
+	PartnerID   int64           `json:"partner_id"`
+	PartnerCode string          `json:"partner_code"`
+	PartnerName string          `json:"partner_name"`
+	Buckets     AgingBucketVO   `json:"buckets"`
+}
+
+type AgingReportVO struct {
+	Direction string               `json:"direction"`
+	AsOfDate  string               `json:"as_of_date"`
+	Total     AgingBucketVO        `json:"total"`
+	Items     []AgingPartnerItemVO `json:"items"`
+}
+

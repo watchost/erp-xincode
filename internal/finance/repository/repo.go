@@ -5,6 +5,7 @@ package repository
 import (
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"erp-system/internal/finance/model"
 )
@@ -92,6 +93,50 @@ type BudgetRepository interface {
 	// 用 GREATEST(...,0) 兜底防止跨期/重复释放导致占用为负。命中预算行返回 true；
 	// 本期未设预算返回 false（调用方视为不启用预算控制，无需释放）。
 	ReleaseAtomic(tx *gorm.DB, budgetType string, year, month int, amount decimal.Decimal) (exists bool, err error)
+}
+
+type ReceivableRepository interface {
+	Create(tx *gorm.DB, recv *model.FinReceivable) error
+	Update(tx *gorm.DB, recv *model.FinReceivable) error
+	FindByID(id int64) (*model.FinReceivable, error)
+	FindByIDForUpdate(tx *gorm.DB, id int64) (*model.FinReceivable, error)
+	List(customerID int64, recvNo string, status int16, period string, page, pageSize int) ([]*model.FinReceivable, int64, error)
+	ListUnsettled(customerID int64) ([]*model.FinReceivable, error)
+	ListAllUnsettled() ([]*model.FinReceivable, error)
+}
+
+type PayableRepository interface {
+	Create(tx *gorm.DB, pay *model.FinPayable) error
+	Update(tx *gorm.DB, pay *model.FinPayable) error
+	FindByID(id int64) (*model.FinPayable, error)
+	FindByIDForUpdate(tx *gorm.DB, id int64) (*model.FinPayable, error)
+	List(supplierID int64, payNo string, status int16, period string, page, pageSize int) ([]*model.FinPayable, int64, error)
+	ListUnsettled(supplierID int64) ([]*model.FinPayable, error)
+	ListAllUnsettled() ([]*model.FinPayable, error)
+}
+
+type ReceiptRepository interface {
+	Create(tx *gorm.DB, receipt *model.FinReceipt) error
+	FindByID(id int64) (*model.FinReceipt, error)
+	FindByIDForUpdate(tx *gorm.DB, id int64) (*model.FinReceipt, error)
+	List(customerID int64, receiptNo string, page, pageSize int) ([]*model.FinReceipt, int64, error)
+	SumSettledAmount(receiptID int64) (decimal.Decimal, error)
+	SumSettledAmountTx(tx *gorm.DB, receiptID int64) (decimal.Decimal, error)
+}
+
+type PaymentRepository interface {
+	Create(tx *gorm.DB, payment *model.FinPayment) error
+	FindByID(id int64) (*model.FinPayment, error)
+	FindByIDForUpdate(tx *gorm.DB, id int64) (*model.FinPayment, error)
+	List(supplierID int64, paymentNo string, page, pageSize int) ([]*model.FinPayment, int64, error)
+	SumSettledAmount(paymentID int64) (decimal.Decimal, error)
+	SumSettledAmountTx(tx *gorm.DB, paymentID int64) (decimal.Decimal, error)
+}
+
+type SettlementRepository interface {
+	Create(tx *gorm.DB, settle *model.FinSettlement) error
+	ListByBill(settleType int16, billID int64) ([]*model.FinSettlement, error)
+	ListByTarget(settleType int16, targetID int64) ([]*model.FinSettlement, error)
 }
 
 type costCardRepo struct {
@@ -469,3 +514,332 @@ func (r *budgetRepo) ReleaseAtomic(tx *gorm.DB, budgetType string, year, month i
 	}
 	return res.RowsAffected > 0, nil
 }
+
+type receivableRepo struct {
+	db *gorm.DB
+}
+
+func NewReceivableRepository(db *gorm.DB) ReceivableRepository {
+	return &receivableRepo{db: db}
+}
+
+func (r *receivableRepo) Create(tx *gorm.DB, recv *model.FinReceivable) error {
+	db := r.db
+	if tx != nil {
+		db = tx
+	}
+	return db.Create(recv).Error
+}
+
+func (r *receivableRepo) Update(tx *gorm.DB, recv *model.FinReceivable) error {
+	db := r.db
+	if tx != nil {
+		db = tx
+	}
+	return db.Save(recv).Error
+}
+
+func (r *receivableRepo) FindByID(id int64) (*model.FinReceivable, error) {
+	var recv model.FinReceivable
+	if err := r.db.Where("id = ?", id).First(&recv).Error; err != nil {
+		return nil, err
+	}
+	return &recv, nil
+}
+
+func (r *receivableRepo) FindByIDForUpdate(tx *gorm.DB, id int64) (*model.FinReceivable, error) {
+	var recv model.FinReceivable
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).First(&recv).Error; err != nil {
+		return nil, err
+	}
+	return &recv, nil
+}
+
+func (r *receivableRepo) List(customerID int64, recvNo string, status int16, period string, page, pageSize int) ([]*model.FinReceivable, int64, error) {
+	var list []*model.FinReceivable
+	var total int64
+	q := r.db.Model(&model.FinReceivable{})
+	if customerID > 0 {
+		q = q.Where("customer_id = ?", customerID)
+	}
+	if recvNo != "" {
+		q = q.Where("receivable_no LIKE ?", "%"+recvNo+"%")
+	}
+	if status > 0 {
+		q = q.Where("status = ?", status)
+	}
+	if period != "" {
+		q = q.Where("period = ?", period)
+	}
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if err := q.Order("due_at ASC, id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&list).Error; err != nil {
+		return nil, 0, err
+	}
+	return list, total, nil
+}
+
+func (r *receivableRepo) ListUnsettled(customerID int64) ([]*model.FinReceivable, error) {
+	var list []*model.FinReceivable
+	q := r.db.Where("status IN (1, 2)")
+	if customerID > 0 {
+		q = q.Where("customer_id = ?", customerID)
+	}
+	if err := q.Order("due_at ASC").Find(&list).Error; err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+func (r *receivableRepo) ListAllUnsettled() ([]*model.FinReceivable, error) {
+	return r.ListUnsettled(0)
+}
+
+type payableRepo struct {
+	db *gorm.DB
+}
+
+func NewPayableRepository(db *gorm.DB) PayableRepository {
+	return &payableRepo{db: db}
+}
+
+func (r *payableRepo) Create(tx *gorm.DB, pay *model.FinPayable) error {
+	db := r.db
+	if tx != nil {
+		db = tx
+	}
+	return db.Create(pay).Error
+}
+
+func (r *payableRepo) Update(tx *gorm.DB, pay *model.FinPayable) error {
+	db := r.db
+	if tx != nil {
+		db = tx
+	}
+	return db.Save(pay).Error
+}
+
+func (r *payableRepo) FindByID(id int64) (*model.FinPayable, error) {
+	var pay model.FinPayable
+	if err := r.db.Where("id = ?", id).First(&pay).Error; err != nil {
+		return nil, err
+	}
+	return &pay, nil
+}
+
+func (r *payableRepo) FindByIDForUpdate(tx *gorm.DB, id int64) (*model.FinPayable, error) {
+	var pay model.FinPayable
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).First(&pay).Error; err != nil {
+		return nil, err
+	}
+	return &pay, nil
+}
+
+func (r *payableRepo) List(supplierID int64, payNo string, status int16, period string, page, pageSize int) ([]*model.FinPayable, int64, error) {
+	var list []*model.FinPayable
+	var total int64
+	q := r.db.Model(&model.FinPayable{})
+	if supplierID > 0 {
+		q = q.Where("supplier_id = ?", supplierID)
+	}
+	if payNo != "" {
+		q = q.Where("payable_no LIKE ?", "%"+payNo+"%")
+	}
+	if status > 0 {
+		q = q.Where("status = ?", status)
+	}
+	if period != "" {
+		q = q.Where("period = ?", period)
+	}
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if err := q.Order("due_at ASC, id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&list).Error; err != nil {
+		return nil, 0, err
+	}
+	return list, total, nil
+}
+
+func (r *payableRepo) ListUnsettled(supplierID int64) ([]*model.FinPayable, error) {
+	var list []*model.FinPayable
+	q := r.db.Where("status IN (1, 2)")
+	if supplierID > 0 {
+		q = q.Where("supplier_id = ?", supplierID)
+	}
+	if err := q.Order("due_at ASC").Find(&list).Error; err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+func (r *payableRepo) ListAllUnsettled() ([]*model.FinPayable, error) {
+	return r.ListUnsettled(0)
+}
+
+type receiptRepo struct {
+	db *gorm.DB
+}
+
+func NewReceiptRepository(db *gorm.DB) ReceiptRepository {
+	return &receiptRepo{db: db}
+}
+
+func (r *receiptRepo) Create(tx *gorm.DB, receipt *model.FinReceipt) error {
+	db := r.db
+	if tx != nil {
+		db = tx
+	}
+	return db.Create(receipt).Error
+}
+
+func (r *receiptRepo) FindByID(id int64) (*model.FinReceipt, error) {
+	var receipt model.FinReceipt
+	if err := r.db.Where("id = ?", id).First(&receipt).Error; err != nil {
+		return nil, err
+	}
+	return &receipt, nil
+}
+
+func (r *receiptRepo) FindByIDForUpdate(tx *gorm.DB, id int64) (*model.FinReceipt, error) {
+	var receipt model.FinReceipt
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).First(&receipt).Error; err != nil {
+		return nil, err
+	}
+	return &receipt, nil
+}
+
+func (r *receiptRepo) List(customerID int64, receiptNo string, page, pageSize int) ([]*model.FinReceipt, int64, error) {
+	var list []*model.FinReceipt
+	var total int64
+	q := r.db.Model(&model.FinReceipt{})
+	if customerID > 0 {
+		q = q.Where("customer_id = ?", customerID)
+	}
+	if receiptNo != "" {
+		q = q.Where("receipt_no LIKE ?", "%"+receiptNo+"%")
+	}
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if err := q.Order("created_at DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&list).Error; err != nil {
+		return nil, 0, err
+	}
+	return list, total, nil
+}
+
+func (r *receiptRepo) SumSettledAmount(receiptID int64) (decimal.Decimal, error) {
+	return r.SumSettledAmountTx(r.db, receiptID)
+}
+
+func (r *receiptRepo) SumSettledAmountTx(tx *gorm.DB, receiptID int64) (decimal.Decimal, error) {
+	var sum decimal.Decimal
+	err := tx.Model(&model.FinSettlement{}).
+		Select("COALESCE(SUM(amount), 0)").
+		Where("settlement_type = 1 AND bill_id = ?", receiptID).
+		Scan(&sum).Error
+	if err != nil {
+		return decimal.Zero, err
+	}
+	return sum, nil
+}
+
+type paymentRepo struct {
+	db *gorm.DB
+}
+
+func NewPaymentRepository(db *gorm.DB) PaymentRepository {
+	return &paymentRepo{db: db}
+}
+
+func (r *paymentRepo) Create(tx *gorm.DB, payment *model.FinPayment) error {
+	db := r.db
+	if tx != nil {
+		db = tx
+	}
+	return db.Create(payment).Error
+}
+
+func (r *paymentRepo) FindByID(id int64) (*model.FinPayment, error) {
+	var payment model.FinPayment
+	if err := r.db.Where("id = ?", id).First(&payment).Error; err != nil {
+		return nil, err
+	}
+	return &payment, nil
+}
+
+func (r *paymentRepo) FindByIDForUpdate(tx *gorm.DB, id int64) (*model.FinPayment, error) {
+	var payment model.FinPayment
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).First(&payment).Error; err != nil {
+		return nil, err
+	}
+	return &payment, nil
+}
+
+func (r *paymentRepo) List(supplierID int64, paymentNo string, page, pageSize int) ([]*model.FinPayment, int64, error) {
+	var list []*model.FinPayment
+	var total int64
+	q := r.db.Model(&model.FinPayment{})
+	if supplierID > 0 {
+		q = q.Where("supplier_id = ?", supplierID)
+	}
+	if paymentNo != "" {
+		q = q.Where("payment_no LIKE ?", "%"+paymentNo+"%")
+	}
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if err := q.Order("created_at DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&list).Error; err != nil {
+		return nil, 0, err
+	}
+	return list, total, nil
+}
+
+func (r *paymentRepo) SumSettledAmount(paymentID int64) (decimal.Decimal, error) {
+	return r.SumSettledAmountTx(r.db, paymentID)
+}
+
+func (r *paymentRepo) SumSettledAmountTx(tx *gorm.DB, paymentID int64) (decimal.Decimal, error) {
+	var sum decimal.Decimal
+	err := tx.Model(&model.FinSettlement{}).
+		Select("COALESCE(SUM(amount), 0)").
+		Where("settlement_type = 2 AND bill_id = ?", paymentID).
+		Scan(&sum).Error
+	if err != nil {
+		return decimal.Zero, err
+	}
+	return sum, nil
+}
+
+type settlementRepo struct {
+	db *gorm.DB
+}
+
+func NewSettlementRepository(db *gorm.DB) SettlementRepository {
+	return &settlementRepo{db: db}
+}
+
+func (r *settlementRepo) Create(tx *gorm.DB, settle *model.FinSettlement) error {
+	db := r.db
+	if tx != nil {
+		db = tx
+	}
+	return db.Create(settle).Error
+}
+
+func (r *settlementRepo) ListByBill(settleType int16, billID int64) ([]*model.FinSettlement, error) {
+	var list []*model.FinSettlement
+	if err := r.db.Where("settlement_type = ? AND bill_id = ?", settleType, billID).Order("created_at DESC").Find(&list).Error; err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+func (r *settlementRepo) ListByTarget(settleType int16, targetID int64) ([]*model.FinSettlement, error) {
+	var list []*model.FinSettlement
+	if err := r.db.Where("settlement_type = ? AND target_id = ?", settleType, targetID).Order("created_at DESC").Find(&list).Error; err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+

@@ -72,6 +72,15 @@ const (
 	PermFinanceBudget  = "finance:budget"
 	PermFinanceAccount = "finance:account"
 
+	PermFinanceReceivableView   = "finance:receivable:view"
+	PermFinancePayableView      = "finance:payable:view"
+	PermFinanceReceiptView      = "finance:receipt:view"
+	PermFinanceReceiptCreate    = "finance:receipt:create"
+	PermFinancePaymentView      = "finance:payment:view"
+	PermFinancePaymentCreate    = "finance:payment:create"
+	PermFinanceSettlementCreate = "finance:settlement:create"
+	PermFinanceAgingView        = "finance:aging:view"
+
 	PermMDMMaterial  = "mdm:material"
 	PermMDMSupplier  = "mdm:supplier"
 	PermMDMWarehouse = "mdm:warehouse"
@@ -337,6 +346,26 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 
 			finance.GET("/income-statement", middleware.RequirePermission(PermFinanceReports), d.Finance.GetIncomeStatement)
 			finance.GET("/cash-flow", middleware.RequirePermission(PermFinanceReports), d.Finance.GetCashFlow)
+
+			// 应收应付与对账
+			finance.GET("/receivables", middleware.RequirePermission(PermFinanceReceivableView), d.Finance.ListReceivables)
+			finance.POST("/receivables", middleware.RequirePermission(PermFinanceReceivableView), d.Finance.CreateReceivable)
+			finance.GET("/receivables/:id", middleware.RequirePermission(PermFinanceReceivableView), d.Finance.GetReceivable)
+
+			finance.GET("/payables", middleware.RequirePermission(PermFinancePayableView), d.Finance.ListPayables)
+			finance.POST("/payables", middleware.RequirePermission(PermFinancePayableView), d.Finance.CreatePayable)
+			finance.GET("/payables/:id", middleware.RequirePermission(PermFinancePayableView), d.Finance.GetPayable)
+
+			finance.GET("/receipts", middleware.RequirePermission(PermFinanceReceiptView), d.Finance.ListReceipts)
+			finance.POST("/receipts", middleware.RequirePermission(PermFinanceReceiptCreate), d.Finance.CreateReceipt)
+			finance.GET("/receipts/:id", middleware.RequirePermission(PermFinanceReceiptView), d.Finance.GetReceipt)
+
+			finance.GET("/payments", middleware.RequirePermission(PermFinancePaymentView), d.Finance.ListPayments)
+			finance.POST("/payments", middleware.RequirePermission(PermFinancePaymentCreate), d.Finance.CreatePayment)
+			finance.GET("/payments/:id", middleware.RequirePermission(PermFinancePaymentView), d.Finance.GetPayment)
+
+			finance.POST("/settlements", middleware.RequirePermission(PermFinanceSettlementCreate), d.Finance.CreateSettlement)
+			finance.GET("/reports/aging", middleware.RequirePermission(PermFinanceAgingView), d.Finance.GetAgingReport)
 		}
 
 		dashboard := api.Group("/dashboard")

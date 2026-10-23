@@ -265,6 +265,16 @@ func CreateCustomer(t *testing.T, gdb *gorm.DB, codeSuffix string, creditLimit d
 	return c
 }
 
+// CreateSupplier 写入供应商夹具。
+func CreateSupplier(t *testing.T, gdb *gorm.DB, code, name string) *mdmModel.MdmSupplier {
+	t.Helper()
+	s := &mdmModel.MdmSupplier{SupplierCode: code, Name: name, Level: 1}
+	if err := gdb.Create(s).Error; err != nil {
+		t.Fatalf("创建供应商夹具失败: %v", err)
+	}
+	return s
+}
+
 // CreateWarehouse 写入仓库夹具。
 func CreateWarehouse(t *testing.T, gdb *gorm.DB, code, name string) *mdmModel.MdmWarehouse {
 	t.Helper()
@@ -316,7 +326,7 @@ func NewWarehouseService(gdb *gorm.DB) *warehouseService.WarehouseService {
 
 // NewFinanceService 装配财务 service。
 func NewFinanceService(gdb *gorm.DB) *financeService.FinanceService {
-	return financeService.NewFinanceService(
+	svc := financeService.NewFinanceService(
 		db.NewTxManager(gdb),
 		financeRepo.NewCostCardRepository(gdb),
 		financeRepo.NewAccountEntryRepository(gdb),
@@ -326,6 +336,14 @@ func NewFinanceService(gdb *gorm.DB) *financeService.FinanceService {
 		mdmRepo.NewMaterialRepository(gdb),
 		bizno.NewGenerator(nil),
 	)
+	svc.SetReceivableRepository(financeRepo.NewReceivableRepository(gdb))
+	svc.SetPayableRepository(financeRepo.NewPayableRepository(gdb))
+	svc.SetReceiptRepository(financeRepo.NewReceiptRepository(gdb))
+	svc.SetPaymentRepository(financeRepo.NewPaymentRepository(gdb))
+	svc.SetSettlementRepository(financeRepo.NewSettlementRepository(gdb))
+	svc.SetCustomerRepository(mdmRepo.NewCustomerRepository(gdb))
+	svc.SetSupplierRepository(mdmRepo.NewSupplierRepository(gdb))
+	return svc
 }
 
 // FinanceGateway 是采购 service 财务网关的公开镜像（私有接口不能跨包命名），

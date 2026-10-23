@@ -179,10 +179,22 @@ func main() {
 	financeBudgetRepo := financeRepository.NewBudgetRepository(dbConn)
 	financeVoucherRepo := financeRepository.NewVoucherRepository(dbConn)
 	financeAccountRepo := financeRepository.NewAccountRepository(dbConn)
+	financeRecvRepo := financeRepository.NewReceivableRepository(dbConn)
+	financePayRepo := financeRepository.NewPayableRepository(dbConn)
+	financeReceiptRepo := financeRepository.NewReceiptRepository(dbConn)
+	financePaymentRepo := financeRepository.NewPaymentRepository(dbConn)
+	financeSettleRepo := financeRepository.NewSettlementRepository(dbConn)
 	financeSvc := financeService.NewFinanceService(
 		txManager, financeCostCardRepo, financeAccountEntryRepo, financeVoucherRepo, financeAccountRepo, financeBudgetRepo,
 		mdmMaterialRepo, numberGen,
 	)
+	financeSvc.SetReceivableRepository(financeRecvRepo)
+	financeSvc.SetPayableRepository(financePayRepo)
+	financeSvc.SetReceiptRepository(financeReceiptRepo)
+	financeSvc.SetPaymentRepository(financePaymentRepo)
+	financeSvc.SetSettlementRepository(financeSettleRepo)
+	financeSvc.SetCustomerRepository(mdmCustomerRepo)
+	financeSvc.SetSupplierRepository(mdmSupplierRepo)
 	financeH := financeHandler.NewFinanceHandler(financeSvc)
 	warehouseSvc.SetFinance(financeSvc)
 

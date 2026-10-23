@@ -80,3 +80,93 @@ func (FinAccount) TableName() string      { return "fin_account" }
 func (FinVoucher) TableName() string      { return "fin_voucher" }
 func (FinAccountEntry) TableName() string { return "fin_voucher_entry" }
 func (FinBudget) TableName() string       { return "fin_budget" }
+
+// 应收应付与结算状态常量
+const (
+	BillStatusPending   int16 = 1 // 待结算
+	BillStatusPartial   int16 = 2 // 部分结算
+	BillStatusSettled   int16 = 3 // 已结清
+	BillStatusCancelled int16 = 5 // 已取消
+)
+
+type FinReceivable struct {
+	ID             int64           `json:"id"`
+	ReceivableNo   string          `json:"receivable_no"`
+	CustomerID     int64           `json:"customer_id"`
+	SourceType     int16           `json:"source_type"`
+	SourceNo       string          `json:"source_no"`
+	Amount         decimal.Decimal `json:"amount"`
+	ReceivedAmount decimal.Decimal `json:"received_amount"`
+	DueAt          time.Time       `json:"due_at"`
+	Period         string          `json:"period"`
+	Status         int16           `json:"status"`
+	Remark         string          `json:"remark"`
+	TenantID       int64           `json:"tenant_id"`
+	CreatedAt      time.Time       `json:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
+	DeletedAt      *time.Time      `json:"-" gorm:"index"`
+}
+
+type FinPayable struct {
+	ID          int64           `json:"id"`
+	PayableNo   string          `json:"payable_no"`
+	SupplierID  int64           `json:"supplier_id"`
+	SourceType  int16           `json:"source_type"`
+	SourceNo    string          `json:"source_no"`
+	Amount      decimal.Decimal `json:"amount"`
+	PaidAmount  decimal.Decimal `json:"paid_amount"`
+	DueAt       time.Time       `json:"due_at"`
+	Period      string          `json:"period"`
+	Status      int16           `json:"status"`
+	Remark      string          `json:"remark"`
+	TenantID    int64           `json:"tenant_id"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+	DeletedAt   *time.Time      `json:"-" gorm:"index"`
+}
+
+type FinReceipt struct {
+	ID            int64           `json:"id"`
+	ReceiptNo     string          `json:"receipt_no"`
+	CustomerID    int64           `json:"customer_id"`
+	Amount        decimal.Decimal `json:"amount"`
+	ReceiptDate   time.Time       `json:"receipt_date"`
+	PaymentMethod int16           `json:"payment_method"`
+	BankAccount   string          `json:"bank_account"`
+	Remark        string          `json:"remark"`
+	CreatedBy     int64           `json:"created_by"`
+	TenantID      int64           `json:"tenant_id"`
+	CreatedAt     time.Time       `json:"created_at"`
+}
+
+type FinPayment struct {
+	ID            int64           `json:"id"`
+	PaymentNo     string          `json:"payment_no"`
+	SupplierID    int64           `json:"supplier_id"`
+	Amount        decimal.Decimal `json:"amount"`
+	PaymentDate   time.Time       `json:"payment_date"`
+	PaymentMethod int16           `json:"payment_method"`
+	BankAccount   string          `json:"bank_account"`
+	Remark        string          `json:"remark"`
+	CreatedBy     int64           `json:"created_by"`
+	TenantID      int64           `json:"tenant_id"`
+	CreatedAt     time.Time       `json:"created_at"`
+}
+
+type FinSettlement struct {
+	ID             int64           `json:"id"`
+	SettlementNo   string          `json:"settlement_no"`
+	SettlementType int16           `json:"settlement_type"` // 1=收款核销 2=付款核销
+	BillID         int64           `json:"bill_id"`         // receipt_id 或 payment_id
+	TargetID       int64           `json:"target_id"`       // receivable_id 或 payable_id
+	Amount         decimal.Decimal `json:"amount"`
+	CreatedBy      int64           `json:"created_by"`
+	CreatedAt      time.Time       `json:"created_at"`
+}
+
+func (FinReceivable) TableName() string { return "fin_receivable" }
+func (FinPayable) TableName() string    { return "fin_payable" }
+func (FinReceipt) TableName() string    { return "fin_receipt" }
+func (FinPayment) TableName() string    { return "fin_payment" }
+func (FinSettlement) TableName() string { return "fin_settlement" }
+

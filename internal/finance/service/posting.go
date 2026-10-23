@@ -19,6 +19,7 @@ import (
 // 财务最小闭环只覆盖采购入库与生产领料两个业务事件，用到的科目在此集中维护；
 // 完整的 fin_account 科目主数据在 P1 阶段补齐。
 const (
+	AccountBankDeposit    = "1002" // 银行存款（资产类，借增贷减）
 	AccountRawMaterials   = "1403" // 原材料（资产类，借增贷减）
 	AccountFinishedGoods  = "1405" // 库存商品（资产类，借增贷减）
 	AccountReceivable     = "1122" // 应收账款（资产类，借增贷减）
@@ -38,6 +39,8 @@ const (
 	BizTypeSalesReturn        = "sales_return"        // 销售退货入库（P2 §3.1）
 	BizTypeInventoryCheckGain = "inventory_check_gain" // 盘盈入库（P2 §3.2）
 	BizTypeInventoryCheckLoss = "inventory_check_loss" // 盘亏出库（P2 §3.2）
+	BizTypeReceiptSettlement  = "receipt_settlement"  // 收款核销（P2 §3.5）
+	BizTypePaymentSettlement  = "payment_settlement"  // 付款核销（P2 §3.5）
 )
 
 // 成本卡来源类型，写入 fin_cost.source_type。

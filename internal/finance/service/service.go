@@ -27,6 +27,13 @@ type FinanceService struct {
 	voucherRepo      repository.VoucherRepository
 	accountRepo      repository.AccountRepository
 	budgetRepo       repository.BudgetRepository
+	recvRepo         repository.ReceivableRepository
+	payRepo          repository.PayableRepository
+	receiptRepo      repository.ReceiptRepository
+	paymentRepo      repository.PaymentRepository
+	settleRepo       repository.SettlementRepository
+	customerRepo     mdmRepo.CustomerRepository
+	supplierRepo     mdmRepo.SupplierRepository
 	materialRepo     mdmRepo.MaterialRepository
 	numbers          *bizno.Generator
 }
@@ -51,6 +58,34 @@ func NewFinanceService(
 		materialRepo:     materialRepo,
 		numbers:          numbers,
 	}
+}
+
+func (s *FinanceService) SetReceivableRepository(r repository.ReceivableRepository) {
+	s.recvRepo = r
+}
+
+func (s *FinanceService) SetPayableRepository(r repository.PayableRepository) {
+	s.payRepo = r
+}
+
+func (s *FinanceService) SetReceiptRepository(r repository.ReceiptRepository) {
+	s.receiptRepo = r
+}
+
+func (s *FinanceService) SetPaymentRepository(r repository.PaymentRepository) {
+	s.paymentRepo = r
+}
+
+func (s *FinanceService) SetSettlementRepository(r repository.SettlementRepository) {
+	s.settleRepo = r
+}
+
+func (s *FinanceService) SetCustomerRepository(r mdmRepo.CustomerRepository) {
+	s.customerRepo = r
+}
+
+func (s *FinanceService) SetSupplierRepository(r mdmRepo.SupplierRepository) {
+	s.supplierRepo = r
 }
 
 func (s *FinanceService) ListCostCards(ctx context.Context, req dto.CostCardQuery) ([]dto.CostCardVO, int64, error) {
@@ -372,3 +407,461 @@ func (s *FinanceService) ReleaseBudgetTx(ctx context.Context, tx *gorm.DB, budge
 	_, err := s.budgetRepo.ReleaseAtomic(tx, budgetType, now.Year(), int(now.Month()), amount)
 	return err
 }
+
+func (s *FinanceService) generateNo(ctx context.Context, prefix string) string {
+	if s.numbers != nil {
+		return s.numbers.Next(ctx, prefix)
+	}
+	return fmt.Sprintf("%s%s%04d", prefix, time.Now().Format("20060102150405"), time.Now().UnixNano()%10000)
+}
+
+// ----------------- P2 §3.5 应收应付与对账核心业务实现 -----------------
+
+func (s *FinanceService) CreateReceivable(ctx context.Context, req dto.CreateReceivableReq, tenantID int64) (*model.FinReceivable, error) {
+	if s.customerRepo != nil {
+		if _, err := s.customerRepo.FindByID(req.CustomerID); err != nil {
+			return nil, errors.New(30002, 404, "客户不存在")
+		}
+	}
+	dueAt, err := time.Parse("2006-01-02", req.DueAt)
+	if err != nil {
+		return nil, errors.New(40001, 400, "到期日格式错误(YYYY-MM-DD)")
+	}
+	period := req.Period
+	if period == "" {
+		period = dueAt.Format("2006-01")
+	}
+
+	recvNo := s.generateNo(ctx, "AR")
+	sourceType := req.SourceType
+	if sourceType == 0 {
+		sourceType = 2 // 默认手工录入
+	}
+
+	recv := &model.FinReceivable{
+		ReceivableNo:   recvNo,
+		CustomerID:     req.CustomerID,
+		SourceType:     sourceType,
+		SourceNo:       req.SourceNo,
+		Amount:         decimalx.Money(req.Amount),
+		ReceivedAmount: decimal.Zero,
+		DueAt:          dueAt,
+		Period:         period,
+		Status:         model.BillStatusPending,
+		Remark:         req.Remark,
+		TenantID:       tenantID,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+
+	if err := s.recvRepo.Create(nil, recv); err != nil {
+		return nil, err
+	}
+	return recv, nil
+}
+
+func (s *FinanceService) GetReceivable(ctx context.Context, id int64) (*model.FinReceivable, error) {
+	recv, err := s.recvRepo.FindByID(id)
+	if err != nil {
+		return nil, errors.New(40023, 404, "应收单不存在")
+	}
+	return recv, nil
+}
+
+func (s *FinanceService) ListReceivables(ctx context.Context, req dto.ReceivableQuery) ([]*model.FinReceivable, int64, error) {
+	return s.recvRepo.List(req.CustomerID, req.ReceivableNo, req.Status, req.Period, req.Page, req.PageSize)
+}
+
+func (s *FinanceService) CreatePayable(ctx context.Context, req dto.CreatePayableReq, tenantID int64) (*model.FinPayable, error) {
+	if s.supplierRepo != nil {
+		if _, err := s.supplierRepo.FindByID(req.SupplierID); err != nil {
+			return nil, errors.New(30002, 404, "供应商不存在")
+		}
+	}
+	dueAt, err := time.Parse("2006-01-02", req.DueAt)
+	if err != nil {
+		return nil, errors.New(40001, 400, "到期日格式错误(YYYY-MM-DD)")
+	}
+	period := req.Period
+	if period == "" {
+		period = dueAt.Format("2006-01")
+	}
+
+	payNo := s.generateNo(ctx, "AP")
+	sourceType := req.SourceType
+	if sourceType == 0 {
+		sourceType = 2 // 默认手工录入
+	}
+
+	pay := &model.FinPayable{
+		PayableNo:   payNo,
+		SupplierID:  req.SupplierID,
+		SourceType:  sourceType,
+		SourceNo:    req.SourceNo,
+		Amount:      decimalx.Money(req.Amount),
+		PaidAmount:  decimal.Zero,
+		DueAt:       dueAt,
+		Period:      period,
+		Status:      model.BillStatusPending,
+		Remark:      req.Remark,
+		TenantID:    tenantID,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	if err := s.payRepo.Create(nil, pay); err != nil {
+		return nil, err
+	}
+	return pay, nil
+}
+
+func (s *FinanceService) GetPayable(ctx context.Context, id int64) (*model.FinPayable, error) {
+	pay, err := s.payRepo.FindByID(id)
+	if err != nil {
+		return nil, errors.New(40024, 404, "应付单不存在")
+	}
+	return pay, nil
+}
+
+func (s *FinanceService) ListPayables(ctx context.Context, req dto.PayableQuery) ([]*model.FinPayable, int64, error) {
+	return s.payRepo.List(req.SupplierID, req.PayableNo, req.Status, req.Period, req.Page, req.PageSize)
+}
+
+func (s *FinanceService) CreateReceipt(ctx context.Context, req dto.CreateReceiptReq, userID, tenantID int64) (*model.FinReceipt, error) {
+	if s.customerRepo != nil {
+		if _, err := s.customerRepo.FindByID(req.CustomerID); err != nil {
+			return nil, errors.New(30002, 404, "客户不存在")
+		}
+	}
+	rDate, err := time.Parse("2006-01-02", req.ReceiptDate)
+	if err != nil {
+		return nil, errors.New(40001, 400, "收款日期格式错误(YYYY-MM-DD)")
+	}
+	pMethod := req.PaymentMethod
+	if pMethod == 0 {
+		pMethod = 2
+	}
+
+	receiptNo := s.generateNo(ctx, "RC")
+	receipt := &model.FinReceipt{
+		ReceiptNo:     receiptNo,
+		CustomerID:    req.CustomerID,
+		Amount:        decimalx.Money(req.Amount),
+		ReceiptDate:   rDate,
+		PaymentMethod: pMethod,
+		BankAccount:   req.BankAccount,
+		Remark:        req.Remark,
+		CreatedBy:     userID,
+		TenantID:      tenantID,
+		CreatedAt:     time.Now(),
+	}
+
+	if err := s.receiptRepo.Create(nil, receipt); err != nil {
+		return nil, err
+	}
+	return receipt, nil
+}
+
+func (s *FinanceService) GetReceipt(ctx context.Context, id int64) (*model.FinReceipt, error) {
+	receipt, err := s.receiptRepo.FindByID(id)
+	if err != nil {
+		return nil, errors.New(40025, 404, "收款单不存在")
+	}
+	return receipt, nil
+}
+
+func (s *FinanceService) ListReceipts(ctx context.Context, req dto.ReceiptQuery) ([]*model.FinReceipt, int64, error) {
+	return s.receiptRepo.List(req.CustomerID, req.ReceiptNo, req.Page, req.PageSize)
+}
+
+func (s *FinanceService) CreatePayment(ctx context.Context, req dto.CreatePaymentReq, userID, tenantID int64) (*model.FinPayment, error) {
+	if s.supplierRepo != nil {
+		if _, err := s.supplierRepo.FindByID(req.SupplierID); err != nil {
+			return nil, errors.New(30002, 404, "供应商不存在")
+		}
+	}
+	pDate, err := time.Parse("2006-01-02", req.PaymentDate)
+	if err != nil {
+		return nil, errors.New(40001, 400, "付款日期格式错误(YYYY-MM-DD)")
+	}
+	pMethod := req.PaymentMethod
+	if pMethod == 0 {
+		pMethod = 2
+	}
+
+	paymentNo := s.generateNo(ctx, "PM")
+	payment := &model.FinPayment{
+		PaymentNo:     paymentNo,
+		SupplierID:    req.SupplierID,
+		Amount:        decimalx.Money(req.Amount),
+		PaymentDate:   pDate,
+		PaymentMethod: pMethod,
+		BankAccount:   req.BankAccount,
+		Remark:        req.Remark,
+		CreatedBy:     userID,
+		TenantID:      tenantID,
+		CreatedAt:     time.Now(),
+	}
+
+	if err := s.paymentRepo.Create(nil, payment); err != nil {
+		return nil, err
+	}
+	return payment, nil
+}
+
+func (s *FinanceService) GetPayment(ctx context.Context, id int64) (*model.FinPayment, error) {
+	payment, err := s.paymentRepo.FindByID(id)
+	if err != nil {
+		return nil, errors.New(40026, 404, "付款单不存在")
+	}
+	return payment, nil
+}
+
+func (s *FinanceService) ListPayments(ctx context.Context, req dto.PaymentQuery) ([]*model.FinPayment, int64, error) {
+	return s.paymentRepo.List(req.SupplierID, req.PaymentNo, req.Page, req.PageSize)
+}
+
+func (s *FinanceService) CreateSettlement(ctx context.Context, req dto.CreateSettlementReq, userID int64) (*model.FinSettlement, error) {
+	settleAmount := decimalx.Money(req.Amount)
+	if !settleAmount.IsPositive() {
+		return nil, errors.New(40001, 400, "核销金额必须大于 0")
+	}
+
+	var settle *model.FinSettlement
+	err := s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
+		settleNo := s.generateNo(ctx, "ST")
+
+		if req.SettlementType == 1 {
+			// 收款核销 (Receipt -> Receivable)
+			receipt, err := s.receiptRepo.FindByIDForUpdate(tx, req.BillID)
+			if err != nil {
+				return errors.New(40025, 404, "收款单不存在")
+			}
+			usedAmount, err := s.receiptRepo.SumSettledAmountTx(tx, receipt.ID)
+			if err != nil {
+				return err
+			}
+			availReceipt := receipt.Amount.Sub(usedAmount)
+			if settleAmount.GreaterThan(availReceipt) {
+				return errors.New(40027, 400, fmt.Sprintf("收款单剩余可用金额 %v 小于本次核销金额 %v", availReceipt, settleAmount))
+			}
+
+			recv, err := s.recvRepo.FindByIDForUpdate(tx, req.TargetID)
+			if err != nil {
+				return errors.New(40023, 404, "应收单不存在")
+			}
+			if recv.Status == model.BillStatusSettled || recv.Status == model.BillStatusCancelled {
+				return errors.New(40028, 400, "该应收单已结清或已取消")
+			}
+			unreceived := recv.Amount.Sub(recv.ReceivedAmount)
+			if settleAmount.GreaterThan(unreceived) {
+				return errors.New(40029, 400, fmt.Sprintf("应收单剩余未结金额 %v 小于本次核销金额 %v", unreceived, settleAmount))
+			}
+
+			recv.ReceivedAmount = recv.ReceivedAmount.Add(settleAmount)
+			if recv.ReceivedAmount.Equal(recv.Amount) {
+				recv.Status = model.BillStatusSettled
+			} else {
+				recv.Status = model.BillStatusPartial
+			}
+			recv.UpdatedAt = time.Now()
+			if err := s.recvRepo.Update(tx, recv); err != nil {
+				return err
+			}
+
+			settle = &model.FinSettlement{
+				SettlementNo:   settleNo,
+				SettlementType: 1,
+				BillID:         receipt.ID,
+				TargetID:       recv.ID,
+				Amount:         settleAmount,
+				CreatedBy:      userID,
+				CreatedAt:      time.Now(),
+			}
+			if err := s.settleRepo.Create(tx, settle); err != nil {
+				return err
+			}
+
+			// 自动生成收款核销财务凭证：借 1002 银行存款 / 贷 1122 应收账款
+			return s.PostTx(ctx, tx, PostingInput{
+				BizType:     BizTypeReceiptSettlement,
+				BizNo:       settleNo,
+				Description: fmt.Sprintf("收款核销 %s: 收款单 %s -> 应收单 %s", settleNo, receipt.ReceiptNo, recv.ReceivableNo),
+				CreatedBy:   userID,
+				Lines: []PostingLine{
+					{AccountCode: AccountBankDeposit, Debit: settleAmount},
+					{AccountCode: AccountReceivable, Credit: settleAmount},
+				},
+			})
+		} else {
+			// 付款核销 (Payment -> Payable)
+			payment, err := s.paymentRepo.FindByIDForUpdate(tx, req.BillID)
+			if err != nil {
+				return errors.New(40026, 404, "付款单不存在")
+			}
+			usedAmount, err := s.paymentRepo.SumSettledAmountTx(tx, payment.ID)
+			if err != nil {
+				return err
+			}
+			availPayment := payment.Amount.Sub(usedAmount)
+			if settleAmount.GreaterThan(availPayment) {
+				return errors.New(40030, 400, fmt.Sprintf("付款单剩余可用金额 %v 小于本次核销金额 %v", availPayment, settleAmount))
+			}
+
+			pay, err := s.payRepo.FindByIDForUpdate(tx, req.TargetID)
+			if err != nil {
+				return errors.New(40024, 404, "应付单不存在")
+			}
+			if pay.Status == model.BillStatusSettled || pay.Status == model.BillStatusCancelled {
+				return errors.New(40031, 400, "该应付单已结清或已取消")
+			}
+			unpaid := pay.Amount.Sub(pay.PaidAmount)
+			if settleAmount.GreaterThan(unpaid) {
+				return errors.New(40032, 400, fmt.Sprintf("应付单剩余未付金额 %v 小于本次核销金额 %v", unpaid, settleAmount))
+			}
+
+			pay.PaidAmount = pay.PaidAmount.Add(settleAmount)
+			if pay.PaidAmount.Equal(pay.Amount) {
+				pay.Status = model.BillStatusSettled
+			} else {
+				pay.Status = model.BillStatusPartial
+			}
+			pay.UpdatedAt = time.Now()
+			if err := s.payRepo.Update(tx, pay); err != nil {
+				return err
+			}
+
+			settle = &model.FinSettlement{
+				SettlementNo:   settleNo,
+				SettlementType: 2,
+				BillID:         payment.ID,
+				TargetID:       pay.ID,
+				Amount:         settleAmount,
+				CreatedBy:      userID,
+				CreatedAt:      time.Now(),
+			}
+			if err := s.settleRepo.Create(tx, settle); err != nil {
+				return err
+			}
+
+			// 自动生成付款核销财务凭证：借 2202 应付账款 / 贷 1002 银行存款
+			return s.PostTx(ctx, tx, PostingInput{
+				BizType:     BizTypePaymentSettlement,
+				BizNo:       settleNo,
+				Description: fmt.Sprintf("付款核销 %s: 付款单 %s -> 应付单 %s", settleNo, payment.PaymentNo, pay.PayableNo),
+				CreatedBy:   userID,
+				Lines: []PostingLine{
+					{AccountCode: AccountsPayable, Debit: settleAmount},
+					{AccountCode: AccountBankDeposit, Credit: settleAmount},
+				},
+			})
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	return settle, nil
+}
+
+func (s *FinanceService) GetAgingReport(ctx context.Context, req dto.AgingQuery) (*dto.AgingReportVO, error) {
+	asOf := time.Now().Truncate(24 * time.Hour)
+	if req.AsOfDate != "" {
+		if t, err := time.Parse("2006-01-02", req.AsOfDate); err == nil {
+			asOf = t.Truncate(24 * time.Hour)
+		}
+	}
+
+	report := &dto.AgingReportVO{
+		Direction: req.Direction,
+		AsOfDate:  asOf.Format("2006-01-02"),
+	}
+
+	partnerMap := make(map[int64]*dto.AgingPartnerItemVO)
+
+	classifyBucket := func(buckets *dto.AgingBucketVO, dueAt time.Time, amount decimal.Decimal) {
+		diffDays := int(asOf.Sub(dueAt.Truncate(24 * time.Hour)).Hours() / 24)
+		if diffDays <= 0 {
+			buckets.NotDue = buckets.NotDue.Add(amount)
+		} else if diffDays <= 30 {
+			buckets.Days0To30 = buckets.Days0To30.Add(amount)
+		} else if diffDays <= 60 {
+			buckets.Days31To60 = buckets.Days31To60.Add(amount)
+		} else if diffDays <= 90 {
+			buckets.Days61To90 = buckets.Days61To90.Add(amount)
+		} else if diffDays <= 180 {
+			buckets.Days91To180 = buckets.Days91To180.Add(amount)
+		} else {
+			buckets.Days180Plus = buckets.Days180Plus.Add(amount)
+		}
+		buckets.TotalAmount = buckets.TotalAmount.Add(amount)
+	}
+
+	if req.Direction == "recv" {
+		list, err := s.recvRepo.ListUnsettled(req.CustomerID)
+		if err != nil {
+			return nil, err
+		}
+		for _, recv := range list {
+			remain := recv.Amount.Sub(recv.ReceivedAmount)
+			if !remain.IsPositive() {
+				continue
+			}
+			pItem, exists := partnerMap[recv.CustomerID]
+			if !exists {
+				name := fmt.Sprintf("客户-%d", recv.CustomerID)
+				code := fmt.Sprintf("CUS-%d", recv.CustomerID)
+				if s.customerRepo != nil {
+					if c, _ := s.customerRepo.FindByID(recv.CustomerID); c != nil {
+						name = c.Name
+						code = c.CustomerCode
+					}
+				}
+				pItem = &dto.AgingPartnerItemVO{
+					PartnerID:   recv.CustomerID,
+					PartnerCode: code,
+					PartnerName: name,
+				}
+				partnerMap[recv.CustomerID] = pItem
+			}
+			classifyBucket(&pItem.Buckets, recv.DueAt, remain)
+			classifyBucket(&report.Total, recv.DueAt, remain)
+		}
+	} else {
+		list, err := s.payRepo.ListUnsettled(req.SupplierID)
+		if err != nil {
+			return nil, err
+		}
+		for _, pay := range list {
+			remain := pay.Amount.Sub(pay.PaidAmount)
+			if !remain.IsPositive() {
+				continue
+			}
+			pItem, exists := partnerMap[pay.SupplierID]
+			if !exists {
+				name := fmt.Sprintf("供应商-%d", pay.SupplierID)
+				code := fmt.Sprintf("SUP-%d", pay.SupplierID)
+				if s.supplierRepo != nil {
+					if sup, _ := s.supplierRepo.FindByID(pay.SupplierID); sup != nil {
+						name = sup.Name
+						code = sup.SupplierCode
+					}
+				}
+				pItem = &dto.AgingPartnerItemVO{
+					PartnerID:   pay.SupplierID,
+					PartnerCode: code,
+					PartnerName: name,
+				}
+				partnerMap[pay.SupplierID] = pItem
+			}
+			classifyBucket(&pItem.Buckets, pay.DueAt, remain)
+			classifyBucket(&report.Total, pay.DueAt, remain)
+		}
+	}
+
+	for _, item := range partnerMap {
+		report.Items = append(report.Items, *item)
+	}
+
+	return report, nil
+}
+
