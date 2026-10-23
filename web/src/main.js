@@ -9,7 +9,11 @@ import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import App from './App.vue'
 import router from './router'
 import { permissionDirective } from './directives/permission'
+import { registerServiceWorker } from './utils/pwa'
 import './styles/index.scss'
+
+// 初始化 PWA Service Worker 与网络监测
+registerServiceWorker()
 
 const app = createApp(App)
 const pinia = createPinia()

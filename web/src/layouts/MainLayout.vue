@@ -31,6 +31,17 @@
           <el-icon class="collapse-btn"><Menu /></el-icon>
         </div>
         <div class="header-right">
+          <el-button
+            type="primary"
+            round
+            size="small"
+            class="pda-launcher-btn"
+            @click="router.push('/pda')"
+          >
+            <el-icon><Iphone /></el-icon>
+            <span>PDA作业端</span>
+          </el-button>
+
           <el-dropdown @command="handleCommand">
             <span class="user-info">
               <el-icon><Avatar /></el-icon>
@@ -78,7 +89,8 @@ const menus = [
     items: [
       { index: '/warehouse/inbound', label: '入库作业', perm: 'warehouse:inbound' },
       { index: '/warehouse/outbound', label: '出库作业', perm: 'warehouse:outbound' },
-      { index: '/warehouse/inventory', label: '库存管理', perm: 'warehouse:inventory' }
+      { index: '/warehouse/inventory', label: '库存管理', perm: 'warehouse:inventory' },
+      { index: '/pda', label: 'PDA手持终端', perm: 'warehouse:inbound' }
     ]
   },
   {
@@ -203,6 +215,18 @@ function handleCommand(cmd) {
   }
 
   .header-right {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+
+    .pda-launcher-btn {
+      font-size: 13px;
+      font-weight: 600;
+      background: linear-gradient(135deg, #1890ff, #096dd9);
+      border: none;
+      box-shadow: 0 2px 6px rgba(24, 144, 255, 0.3);
+    }
+
     .user-info {
       display: flex;
       align-items: center;

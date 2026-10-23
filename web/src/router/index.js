@@ -116,6 +116,48 @@ const routes = [
         meta: { title: '角色管理', icon: 'UserFilled', permission: 'iam:role' }
       }
     ]
+  },
+  {
+    path: '/pda',
+    component: () => import('@/layouts/PdaLayout.vue'),
+    children: [
+      {
+        path: '',
+        name: 'PdaHome',
+        component: () => import('@/views/pda/index.vue'),
+        meta: { title: 'PDA工作台' }
+      },
+      {
+        path: 'inbound',
+        name: 'PdaInbound',
+        component: () => import('@/views/pda/inbound.vue'),
+        meta: { title: '扫码入库', permission: 'warehouse:inbound' }
+      },
+      {
+        path: 'outbound',
+        name: 'PdaOutbound',
+        component: () => import('@/views/pda/outbound.vue'),
+        meta: { title: '扫码出库', permission: 'warehouse:outbound' }
+      },
+      {
+        path: 'stock-check',
+        name: 'PdaStockCheck',
+        component: () => import('@/views/pda/stock-check.vue'),
+        meta: { title: '盘点录入', permission: 'warehouse:check:entry' }
+      },
+      {
+        path: 'inventory',
+        name: 'PdaInventory',
+        component: () => import('@/views/pda/inventory.vue'),
+        meta: { title: '快速查库', permission: 'warehouse:inventory' }
+      },
+      {
+        path: 'offline-queue',
+        name: 'PdaOfflineQueue',
+        component: () => import('@/views/pda/offline-queue.vue'),
+        meta: { title: '离线同步队列' }
+      }
+    ]
   }
 ]
 

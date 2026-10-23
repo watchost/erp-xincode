@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="pdaGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1890ff"/>
+      <stop offset="100%" stop-color="#096dd9"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="128" fill="url(#pdaGrad)"/>
+  <!-- Warehouse Box Icon -->
+  <path d="M256 100 L390 170 L256 240 L122 170 Z" fill="#ffffff" opacity="0.95"/>
+  <path d="M122 195 L240 260 L240 395 L122 330 Z" fill="#ffffff" opacity="0.8"/>
+  <path d="M272 260 L390 195 L390 330 L272 395 Z" fill="#ffffff" opacity="0.88"/>
+  <!-- Barcode scanner laser beam line -->
+  <line x1="80" y1="256" x2="432" y2="256" stroke="#ff4d4f" stroke-width="12" stroke-linecap="round" stroke-dasharray="16 8"/>
+  <!-- QR target corners -->
+  <path d="M160 140 L130 140 L130 170" stroke="#ffffff" stroke-width="8" fill="none" stroke-linecap="round"/>
+  <path d="M352 140 L382 140 L382 170" stroke="#ffffff" stroke-width="8" fill="none" stroke-linecap="round"/>
+  <path d="M130 340 L130 370 L160 370" stroke="#ffffff" stroke-width="8" fill="none" stroke-linecap="round"/>
+  <path d="M382 340 L382 370 L352 370" stroke="#ffffff" stroke-width="8" fill="none" stroke-linecap="round"/>
+</svg>

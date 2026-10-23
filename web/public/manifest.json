@@ -1,0 +1,61 @@
+{
+  "name": "ERP企业管理系统 - 仓库PDA端",
+  "short_name": "ERP-PDA",
+  "description": "ERP企业管理系统移动端与仓库PDA条码扫描作业系统",
+  "start_url": "/pda",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f0f2f5",
+  "theme_color": "#1890ff",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icons/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "扫码入库",
+      "short_name": "入库",
+      "description": "快速进入PDA扫码入库",
+      "url": "/pda/inbound",
+      "icons": [{ "src": "/icons/icon-192x192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "扫码出库",
+      "short_name": "出库",
+      "description": "快速进入PDA扫码出库",
+      "url": "/pda/outbound",
+      "icons": [{ "src": "/icons/icon-192x192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "盘点录入",
+      "short_name": "盘点",
+      "description": "快速进入PDA盘点作业",
+      "url": "/pda/stock-check",
+      "icons": [{ "src": "/icons/icon-192x192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "离线队列",
+      "short_name": "离线",
+      "description": "查看未同步离线扫码记录",
+      "url": "/pda/offline-queue",
+      "icons": [{ "src": "/icons/icon-192x192.png", "sizes": "192x192" }]
+    }
+  ]
+}
