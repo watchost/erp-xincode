@@ -17,9 +17,23 @@
       destroy-on-close
       append-to-body
       class="pda-scanner-dialog"
-      :before-close="handleClose"
+      :before-close="handleBeforeClose"
     >
-      <div class="camera-viewport">
+      <!-- 降级提示：浏览器不支持摄像头识别 / 非 HTTPS / 摄像头被拒绝 -->
+      <div v-if="fallbackMessage" class="scan-fallback">
+        <el-alert
+          :title="fallbackMessage"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+        <ul class="fallback-tips">
+          <li>PDA 设备：直接按机身侧面的扫码键，条码会自动填入</li>
+          <li>手机 / 其他设备：在下方输入框中手动输入条码，按回车或点“确认”</li>
+        </ul>
+      </div>
+
+      <div v-else class="camera-viewport">
         <!-- 视频流区域 -->
         <video
           ref="videoEl"
@@ -66,7 +80,7 @@
             circle
             size="large"
             type="danger"
-            @click="handleClose"
+            @click="closeDialog"
           >
             <el-icon><Close /></el-icon>
           </el-button>
@@ -78,7 +92,7 @@
         <el-input
           ref="manualInputRef"
           v-model="manualCode"
-          placeholder="或手动输入/扫码枪条码"
+          placeholder="手动输入条码，或按 PDA 扫码键"
           size="large"
           clearable
           @keyup.enter="handleManualSubmit"
@@ -95,17 +109,21 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
-import { playSuccessSound, playErrorSound } from '@/utils/sound'
+import { playSuccessSound } from '@/utils/sound'
+import { detectScanSupport } from '@/utils/scanSupport'
 
 const props = defineProps({
-  // 是否自动开启全局硬件扫码枪键盘监听
+  // 是否监听 PDA 硬件扫码键（扫码头模拟快速键盘输入 + 回车）。
+  // 默认关闭：同一页面只应让一个扫描器监听，否则一次扫码会触发多次。
   listenHardware: {
     type: Boolean,
-    default: true
+    default: false
   }
 })
 
 const emit = defineEmits(['scan', 'close'])
+
+const WANTED_FORMATS = ['qr_code', 'code_128', 'code_39', 'ean_13', 'ean_8', 'upc_a', 'data_matrix']
 
 const visible = ref(false)
 const videoEl = ref(null)
@@ -113,120 +131,135 @@ const manualInputRef = ref(null)
 const manualCode = ref('')
 const hasTorch = ref(false)
 const torchActive = ref(false)
-const currentFacingMode = ref('environment') // 默认后置环境摄像头
+const currentFacingMode = ref('environment')
+// 非空时不显示摄像头画面，改为显示降级提示 + 手动输入
+const fallbackMessage = ref('')
 
 let mediaStream = null
 let scanAnimationId = null
 let barcodeDetector = null
+let handled = false
 
-// 硬件扫码枪缓冲记录
 let keyBuffer = ''
 let lastKeyTime = 0
 
-// 开启扫描器
 async function openScanner() {
-  visible.value = true
   manualCode.value = ''
+  fallbackMessage.value = ''
+  handled = false
+
+  const support = await detectScanSupport()
+  if (!support.cameraScanAvailable) {
+    fallbackMessage.value = support.message
+  }
+
+  visible.value = true
   await nextTick()
-  initBarcodeDetector()
+
+  if (fallbackMessage.value) {
+    manualInputRef.value?.focus()
+    return
+  }
+
+  try {
+    const formats = WANTED_FORMATS.filter((f) => support.formats.includes(f))
+    barcodeDetector = new window.BarcodeDetector({ formats: formats.length ? formats : support.formats })
+  } catch (e) {
+    fallbackMessage.value = '条码识别组件初始化失败，摄像头扫码不可用。请使用 PDA 扫码键，或手动输入条码。'
+    await nextTick()
+    manualInputRef.value?.focus()
+    return
+  }
+
   await startCamera()
 }
 
-// 初始化 BarcodeDetector API (现代浏览器 / Android PDA 原生支持)
-function initBarcodeDetector() {
-  if ('BarcodeDetector' in window) {
-    try {
-      barcodeDetector = new window.BarcodeDetector({
-        formats: ['qr_code', 'code_128', 'code_39', 'ean_13', 'ean_8', 'upc_a', 'data_matrix']
-      })
-    } catch (e) {
-      console.warn('[Scanner] BarcodeDetector init failed:', e)
-    }
+function cameraErrorMessage(err) {
+  const name = err?.name || ''
+  if (name === 'NotAllowedError' || name === 'SecurityError') {
+    return '摄像头权限被拒绝。请在浏览器设置中允许本站使用摄像头，或使用 PDA 扫码键 / 手动输入条码。'
   }
+  if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+    return '未检测到可用的摄像头。请使用 PDA 扫码键，或手动输入条码。'
+  }
+  if (name === 'NotReadableError') {
+    return '摄像头正被其他应用占用。请关闭其他应用后重试，或使用 PDA 扫码键 / 手动输入条码。'
+  }
+  return '无法打开摄像头。请使用 PDA 扫码键，或手动输入条码。'
 }
 
-// 启动摄像头视频流
 async function startCamera() {
   stopCamera()
   try {
-    const constraints = {
+    mediaStream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: currentFacingMode.value,
         width: { ideal: 1280 },
         height: { ideal: 720 }
       },
       audio: false
+    })
+    if (!visible.value) {
+      stopCamera()
+      return
     }
-
-    mediaStream = await navigator.mediaDevices.getUserMedia(constraints)
     if (videoEl.value) {
       videoEl.value.srcObject = mediaStream
       await videoEl.value.play()
-
-      // 检测闪光灯能力
       const track = mediaStream.getVideoTracks()[0]
-      const capabilities = track.getCapabilities ? track.getCapabilities() : {}
+      const capabilities = track?.getCapabilities ? track.getCapabilities() : {}
       hasTorch.value = !!capabilities.torch
-
       startDecodingLoop()
     }
   } catch (err) {
     console.error('[Scanner] startCamera failed:', err)
-    ElMessage.warning('无法打开摄像头，您可使用手动输入或PDA激光扫码枪')
+    stopCamera()
+    fallbackMessage.value = cameraErrorMessage(err)
+    await nextTick()
+    manualInputRef.value?.focus()
   }
 }
 
-// 持续解码帧循环
 function startDecodingLoop() {
+  let busy = false
   const decodeFrame = async () => {
-    if (!visible.value || !videoEl.value) return
-
-    if (videoEl.value.readyState >= 2) {
-      if (barcodeDetector) {
-        try {
-          const barcodes = await barcodeDetector.detect(videoEl.value)
-          if (barcodes && barcodes.length > 0) {
-            const rawVal = barcodes[0].rawValue.trim()
-            if (rawVal) {
-              onScanSuccess(rawVal)
-              return // 扫码成功，中断本轮循环
-            }
-          }
-        } catch (e) {
-          // ignore frame decode errors
+    if (!visible.value || !videoEl.value || handled) return
+    if (!busy && videoEl.value.readyState >= 2 && barcodeDetector) {
+      busy = true
+      try {
+        const barcodes = await barcodeDetector.detect(videoEl.value)
+        const rawVal = barcodes?.[0]?.rawValue?.trim()
+        if (rawVal) {
+          onScanSuccess(rawVal)
+          return
         }
+      } catch (e) {
+        // 单帧识别失败忽略，继续下一帧
+      } finally {
+        busy = false
       }
     }
-
     scanAnimationId = requestAnimationFrame(decodeFrame)
   }
-
   scanAnimationId = requestAnimationFrame(decodeFrame)
 }
 
-// 切换闪光灯
 async function toggleTorch() {
-  if (!mediaStream) return
-  const track = mediaStream.getVideoTracks()[0]
-  if (track && hasTorch.value) {
-    try {
-      torchActive.value = !torchActive.value
-      await track.applyConstraints({
-        advanced: [{ torch: torchActive.value }]
-      })
-    } catch (e) {
-      console.warn('[Scanner] toggleTorch failed:', e)
-    }
+  const track = mediaStream?.getVideoTracks()[0]
+  if (!track || !hasTorch.value) return
+  try {
+    torchActive.value = !torchActive.value
+    await track.applyConstraints({ advanced: [{ torch: torchActive.value }] })
+  } catch (e) {
+    torchActive.value = false
   }
 }
 
-// 切换前后摄像头
 async function switchCamera() {
   currentFacingMode.value = currentFacingMode.value === 'environment' ? 'user' : 'environment'
   await startCamera()
 }
 
-// 停止摄像头
 function stopCamera() {
   if (scanAnimationId) {
     cancelAnimationFrame(scanAnimationId)
@@ -237,16 +270,17 @@ function stopCamera() {
     mediaStream = null
   }
   torchActive.value = false
+  hasTorch.value = false
 }
 
-// 扫码成功回调
 function onScanSuccess(code) {
+  if (handled) return
+  handled = true
   playSuccessSound()
+  closeDialog()
   emit('scan', code)
-  handleClose()
 }
 
-// 手动输入确认
 function handleManualSubmit() {
   const code = manualCode.value.trim()
   if (!code) {
@@ -256,35 +290,45 @@ function handleManualSubmit() {
   onScanSuccess(code)
 }
 
-function handleClose() {
+function closeDialog() {
   stopCamera()
   visible.value = false
   emit('close')
 }
 
-// 硬件激光扫码枪键盘事件拦截（按键间隔 < 50ms 且以 Enter 结尾通常为扫码枪）
+function handleBeforeClose(done) {
+  stopCamera()
+  emit('close')
+  done()
+}
+
+function isEditableTarget(el) {
+  if (!el) return false
+  const tag = el.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable
+}
+
+// PDA 硬件扫码键：扫码头以极短间隔输入字符并以回车结尾。
+// 光标在输入框内时不拦截——由输入框自身接收条码并通过回车提交，避免重复提交。
 function onHardwareKeyDown(e) {
-  if (!props.listenHardware) return
-  // 忽略常见系统功能键
+  if (visible.value) return
   if (e.ctrlKey || e.altKey || e.metaKey) return
+  if (isEditableTarget(e.target)) {
+    keyBuffer = ''
+    return
+  }
 
   const now = Date.now()
-  if (now - lastKeyTime > 200) {
-    keyBuffer = '' // 超时重置缓冲
-  }
+  if (now - lastKeyTime > 100) keyBuffer = ''
   lastKeyTime = now
 
   if (e.key === 'Enter') {
     if (keyBuffer.length >= 2) {
-      const scannedCode = keyBuffer.trim()
+      const code = keyBuffer.trim()
       keyBuffer = ''
-      // 若当前弹窗打开则关闭
-      if (visible.value) {
-        handleClose()
-      }
-      playSuccessSound()
-      emit('scan', scannedCode)
       e.preventDefault()
+      playSuccessSound()
+      emit('scan', code)
     }
   } else if (e.key && e.key.length === 1) {
     keyBuffer += e.key
@@ -306,7 +350,7 @@ onBeforeUnmount(() => {
 
 defineExpose({
   open: openScanner,
-  close: handleClose
+  close: closeDialog
 })
 </script>
 
@@ -475,6 +519,19 @@ defineExpose({
   padding: 8px 18px;
   border-radius: 30px;
   backdrop-filter: blur(10px);
+}
+
+.scan-fallback {
+  flex: 1;
+  padding: 20px 16px;
+  background: #1f2329;
+  color: #e5e6eb;
+
+  .fallback-tips {
+    margin: 16px 0 0 18px;
+    font-size: 14px;
+    line-height: 1.9;
+  }
 }
 
 .manual-input-bar {

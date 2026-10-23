@@ -5,8 +5,20 @@ import { playSuccessSound, playErrorSound } from './sound'
 
 const STORAGE_KEY = 'erp_pda_offline_queue'
 
-export const offlineQueue = ref(loadQueue())
+export const offlineQueue = ref(recoverInterrupted(loadQueue()))
 export const pendingCount = ref(getPendingCount())
+
+// 同步过程中页面被关闭会留下 syncing 状态，重新打开时恢复为待同步
+function recoverInterrupted(queue) {
+  if (!queue.some((i) => i.status === 'syncing')) return queue
+  const fixed = queue.map((i) => (i.status === 'syncing' ? { ...i, status: 'pending' } : i))
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(fixed))
+  } catch (e) {
+    // ignore
+  }
+  return fixed
+}
 
 function loadQueue() {
   try {
@@ -33,13 +45,33 @@ export function getPendingCount() {
   return q.filter((item) => item.status === 'pending' || item.status === 'failed').length
 }
 
-export function addOfflineQueueItem(type, title, payload) {
+export function newIdempotencyKey() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return 'pda-' + crypto.randomUUID()
+  }
+  return 'pda-' + Date.now() + '-' + Math.random().toString(36).substring(2, 12)
+}
+
+// 仅"请求没有到达服务器/没有拿到响应"才算离线，可以转入离线队列重发。
+// 业务错误（库存不足、物料不存在等，HTTP 4xx/5xx 有响应）不能入队，否则重发也会失败。
+// 超时也视为未确认，入队重发时复用同一个幂等键，服务端不会重复入账。
+export function isNetworkError(err) {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return true
+  if (!err) return false
+  if (err.response) {
+    // Service Worker 离线兜底响应
+    return err.response.status === 503 && err.response.data?.offline === true
+  }
+  return err.isAxiosError === true || err.code === 'ECONNABORTED' || err.code === 'ERR_NETWORK'
+}
+
+export function addOfflineQueueItem(type, title, payload, idempotencyKey) {
   const item = {
     id: 'queue_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8),
     type,
     title,
     payload,
-    idempotencyKey: 'idemp_' + Date.now() + '_' + Math.random().toString(36).substring(2, 10),
+    idempotencyKey: idempotencyKey || newIdempotencyKey(),
     createdAt: new Date().toLocaleString(),
     status: 'pending',
     retryCount: 0,
@@ -98,7 +130,7 @@ export async function syncOfflineQueue(apiHandlers) {
       updateQueueItem(item.id, {
         status: 'failed',
         retryCount: (item.retryCount || 0) + 1,
-        lastError: err.message || '网络或接口同步失败'
+        lastError: err?.response?.data?.msg || err?.message || '网络或接口同步失败'
       })
     }
   }

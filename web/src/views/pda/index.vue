@@ -26,7 +26,7 @@
 
     <!-- 快捷通用扫描栏 -->
     <div class="quick-scan-section">
-      <BarcodeScanner @scan="handleGlobalScan">
+      <BarcodeScanner listen-hardware @scan="handleGlobalScan">
         <template #trigger="{ open }">
           <div class="scanner-hero-btn" @click="open">
             <div class="hero-icon-pulse">
@@ -95,6 +95,17 @@
       </div>
     </div>
 
+    <!-- iOS 不支持一键安装，给出手动添加步骤 -->
+    <div v-if="showIosInstallGuide" class="pwa-guide-card">
+      <div class="pwa-guide-content">
+        <el-icon :size="24" color="#1890ff"><Iphone /></el-icon>
+        <div class="pwa-text">
+          <div class="pwa-title">添加到主屏幕（iPhone / iPad）</div>
+          <div class="pwa-desc">在 Safari 中点底部“分享”按钮，选择“添加到主屏幕”</div>
+        </div>
+      </div>
+    </div>
+
     <!-- PWA 安装提示卡片 -->
     <div v-if="canInstallPwa" class="pwa-guide-card">
       <div class="pwa-guide-content">
@@ -113,7 +124,7 @@
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/store/user'
-import { isOnline, canInstallPwa, promptInstallPwa } from '@/utils/pwa'
+import { isOnline, canInstallPwa, promptInstallPwa, showIosInstallGuide } from '@/utils/pwa'
 import { pendingCount } from '@/utils/pdaOffline'
 import { playSuccessSound } from '@/utils/sound'
 import BarcodeScanner from '@/components/pda/BarcodeScanner.vue'

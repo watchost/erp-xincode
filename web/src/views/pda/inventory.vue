@@ -1,6 +1,7 @@
 <!-- Copyright 2026 zhouhouping. All Rights Reserved. -->
 <template>
   <div class="pda-inventory-page">
+    <ScanSupportBanner />
     <!-- 快捷搜索与扫码栏 -->
     <div class="search-card">
       <div class="search-input-group">
@@ -19,7 +20,7 @@
           </template>
         </el-input>
 
-        <BarcodeScanner @scan="onBarcodeScanned">
+        <BarcodeScanner listen-hardware @scan="onBarcodeScanned">
           <template #trigger="{ open }">
             <el-button type="primary" size="large" class="camera-btn" @click="open">
               <el-icon :size="20"><Aim /></el-icon>
@@ -126,6 +127,7 @@ import { listInventory } from '@/api/warehouse'
 import { listWarehouses } from '@/api/mdm'
 import { playSuccessSound } from '@/utils/sound'
 import BarcodeScanner from '@/components/pda/BarcodeScanner.vue'
+import ScanSupportBanner from '@/components/pda/ScanSupportBanner.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -185,7 +187,7 @@ function quickInbound(item) {
     path: '/pda/inbound',
     query: {
       code: item.material_code,
-      warehouse: item.warehouse_code,
+      warehouse_id: item.warehouse_id,
       location: item.location_code
     }
   })
@@ -196,7 +198,7 @@ function quickOutbound(item) {
     path: '/pda/outbound',
     query: {
       code: item.material_code,
-      warehouse: item.warehouse_code,
+      warehouse_id: item.warehouse_id,
       location: item.location_code
     }
   })

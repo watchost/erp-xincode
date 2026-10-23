@@ -6,9 +6,19 @@ export const isOnline = ref(navigator.onLine)
 export const canInstallPwa = ref(false)
 export const deferredInstallPrompt = ref(null)
 
-// Register Service Worker
+// iOS 的 Safari 不会触发 beforeinstallprompt，只能引导用户手动“分享 → 添加到主屏幕”
+const ua = typeof navigator !== 'undefined' ? navigator.userAgent : ''
+export const isIos =
+  /iPad|iPhone|iPod/.test(ua) || (ua.includes('Macintosh') && typeof document !== 'undefined' && 'ontouchend' in document)
+export const isStandalone = ref(
+  (typeof window !== 'undefined' && window.matchMedia?.('(display-mode: standalone)').matches) ||
+    (typeof navigator !== 'undefined' && navigator.standalone === true)
+)
+export const showIosInstallGuide = ref(isIos && !isStandalone.value)
+
+// Register Service Worker（仅生产构建注册，开发环境避免缓存干扰热更新）
 export function registerServiceWorker() {
-  if ('serviceWorker' in navigator && process.env.NODE_ENV !== 'development') {
+  if ('serviceWorker' in navigator && import.meta.env.PROD) {
     window.addEventListener('load', () => {
       navigator.serviceWorker
         .register('/sw.js')
@@ -55,6 +65,7 @@ export function registerServiceWorker() {
   window.addEventListener('appinstalled', () => {
     canInstallPwa.value = false
     deferredInstallPrompt.value = null
+    isStandalone.value = true
     console.log('[PWA] App successfully installed to home screen')
   })
 }

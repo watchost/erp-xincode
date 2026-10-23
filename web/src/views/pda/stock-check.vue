@@ -14,6 +14,8 @@
       </el-button>
     </div>
 
+    <ScanSupportBanner />
+
     <!-- 盘点单选择与基础信息 -->
     <div class="pda-form-card">
       <div class="form-field">
@@ -24,12 +26,13 @@
             placeholder="请选择或扫描盘点单"
             size="large"
             class="pda-select"
+            no-data-text="暂无可录入的盘点单（需草稿/盘点中/待审批状态）"
             @change="onCheckSheetChange"
           >
             <el-option
               v-for="c in checkSheetList"
               :key="c.id"
-              :label="`${c.check_no} (${c.warehouse_name || '仓库' + c.warehouse_id})`"
+              :label="`${c.check_no}（${statusLabel(c.status)}）`"
               :value="c.id"
             />
           </el-select>
@@ -47,20 +50,22 @@
       <!-- 盘点位置 -->
       <div class="form-field" v-if="currentCheckInfo">
         <div class="sheet-info-banner">
-          <div><strong>仓库：</strong>{{ currentCheckInfo.warehouse_name || '主仓' }}</div>
           <div><strong>单号：</strong>{{ currentCheckInfo.check_no }}</div>
+          <div><strong>仓库：</strong>{{ warehouseName(currentCheckInfo.warehouse_id) }}</div>
+          <div><strong>状态：</strong>{{ statusLabel(currentCheckInfo.status) }}</div>
           <div v-if="currentCheckInfo.remark"><strong>备注：</strong>{{ currentCheckInfo.remark }}</div>
         </div>
       </div>
 
-      <!-- 库位选择/扫描 -->
+      <!-- 库位选择 -->
       <div class="form-field">
         <label class="pda-label">盘点库位</label>
         <el-select
           v-model="currentLocationCode"
-          placeholder="选择或扫描库位"
+          placeholder="不选则按仓库整体录入"
           size="large"
           class="pda-select"
+          clearable
         >
           <el-option
             v-for="l in locationList"
@@ -71,25 +76,25 @@
         </el-select>
       </div>
 
-      <!-- 物料条码扫描输入 -->
+      <!-- 物料条码扫描输入：扫码只填入编码并跳到数量，实盘数确认后再提交 -->
       <div class="form-field">
         <label class="pda-label">物料编码 / 条码 <span class="required">*</span></label>
         <div class="barcode-input-group">
           <el-input
             ref="materialInputRef"
             v-model="materialCode"
-            placeholder="对准物料条码扫描"
+            placeholder="按 PDA 扫码键或手动输入"
             size="large"
             class="pda-big-input"
             clearable
-            @keyup.enter="handleMaterialEnter"
+            @keyup.enter="focusQty"
           >
             <template #prefix>
               <el-icon class="input-icon"><Box /></el-icon>
             </template>
           </el-input>
 
-          <BarcodeScanner @scan="onMaterialScanned">
+          <BarcodeScanner listen-hardware @scan="onMaterialScanned">
             <template #trigger="{ open }">
               <el-button type="primary" size="large" class="camera-btn" @click="open">
                 <el-icon :size="20"><Aim /></el-icon>
@@ -108,11 +113,13 @@
             <button class="step-btn" @click="adjustQty(-1)">-1</button>
           </div>
           <el-input-number
+            ref="qtyInputRef"
             v-model="actualQty"
             :min="0"
             :max="999999"
             size="large"
             class="pda-qty-input"
+            @keyup.enter="submitStockCheckItem"
           />
           <div class="stepper-quick-btns">
             <button class="step-btn plus" @click="adjustQty(1)">+1</button>
@@ -179,34 +186,59 @@
 <script setup>
 import { ref, onMounted, nextTick } from 'vue'
 import { listStockChecks, getStockCheck, entryStockCheck } from '@/api/warehouse'
-import { listLocations } from '@/api/mdm'
+import { listLocations, listWarehouses } from '@/api/mdm'
 import { isOnline } from '@/utils/pwa'
-import { addOfflineQueueItem } from '@/utils/pdaOffline'
+import { addOfflineQueueItem, isNetworkError, newIdempotencyKey } from '@/utils/pdaOffline'
+import { buildStockCheckEntry, apiErrorMessage } from '@/utils/pdaResolve'
 import { playSuccessSound, playErrorSound } from '@/utils/sound'
 import BarcodeScanner from '@/components/pda/BarcodeScanner.vue'
+import ScanSupportBanner from '@/components/pda/ScanSupportBanner.vue'
 import { ElMessage } from 'element-plus'
+
+// 后端仅允许 草稿(10)/盘点中(20)/已录入待审批(30) 状态录入实盘
+const ENTRY_STATUSES = [10, 20, 30]
+const STATUS_TEXT = { 10: '草稿', 20: '盘点中', 30: '待审批', 40: '已完成', 50: '已取消' }
 
 const checkSheetList = ref([])
 const selectedCheckId = ref(null)
 const currentCheckInfo = ref(null)
+const warehouseList = ref([])
 const locationList = ref([])
 const currentLocationCode = ref('')
 const materialCode = ref('')
-const actualQty = ref(1)
+const actualQty = ref(0)
 const materialInputRef = ref(null)
+const qtyInputRef = ref(null)
 const submitting = ref(false)
 const checkItemsRecords = ref([])
 
+function statusLabel(status) {
+  return STATUS_TEXT[status] || `状态${status}`
+}
+
+function warehouseName(id) {
+  return warehouseList.value.find((w) => w.id === id)?.name || `仓库#${id}`
+}
+
+async function loadWarehouses() {
+  try {
+    const res = await listWarehouses()
+    warehouseList.value = res.data || []
+  } catch (e) {
+    warehouseList.value = []
+  }
+}
+
 async function loadActiveStockChecks() {
   try {
-    const res = await listStockChecks({ page: 1, page_size: 50 })
-    if (res.code === 0) {
-      checkSheetList.value = res.data?.list || res.data || []
-      // 默认选中第一个
-      if (checkSheetList.value.length > 0 && !selectedCheckId.value) {
-        selectedCheckId.value = checkSheetList.value[0].id
-        onCheckSheetChange()
-      }
+    const res = await listStockChecks({ page: 1, page_size: 100 })
+    const list = res.data?.list || []
+    checkSheetList.value = list.filter((c) => ENTRY_STATUSES.includes(c.status))
+    const stillValid = checkSheetList.value.some((c) => c.id === selectedCheckId.value)
+    if (!stillValid) {
+      selectedCheckId.value = checkSheetList.value[0]?.id ?? null
+      currentCheckInfo.value = null
+      if (selectedCheckId.value) onCheckSheetChange()
     }
   } catch (e) {
     checkSheetList.value = []
@@ -215,61 +247,61 @@ async function loadActiveStockChecks() {
 
 async function onCheckSheetChange() {
   if (!selectedCheckId.value) return
+  currentLocationCode.value = ''
+  const fromList = checkSheetList.value.find((c) => c.id === selectedCheckId.value) || null
   try {
     const res = await getStockCheck(selectedCheckId.value)
-    if (res.code === 0) {
-      currentCheckInfo.value = res.data
-      if (res.data?.warehouse_id) {
-        loadLocations(res.data.warehouse_id)
-      }
-    }
+    currentCheckInfo.value = res.data || fromList
   } catch (e) {
-    currentCheckInfo.value = checkSheetList.value.find((c) => c.id === selectedCheckId.value) || null
+    currentCheckInfo.value = fromList
+  }
+  if (currentCheckInfo.value?.warehouse_id) {
+    loadLocations(currentCheckInfo.value.warehouse_id)
   }
 }
 
 async function loadLocations(warehouseId) {
   try {
     const res = await listLocations({ warehouse_id: warehouseId })
-    if (res.code === 0) {
-      locationList.value = res.data || []
-    }
+    locationList.value = res.data || []
   } catch (e) {
     locationList.value = []
   }
 }
 
 function onCheckBarcodeScanned(code) {
-  const matched = checkSheetList.value.find((c) => c.check_no === code.trim() || String(c.id) === code.trim())
+  const v = code.trim()
+  const matched = checkSheetList.value.find((c) => c.check_no === v)
   if (matched) {
     selectedCheckId.value = matched.id
     onCheckSheetChange()
     playSuccessSound()
     ElMessage.success(`已切换至盘点单：${matched.check_no}`)
   } else {
-    ElMessage.warning(`未找到单号为 [${code}] 的盘点单`)
+    playErrorSound()
+    ElMessage.warning(`未找到可录入的盘点单 [${v}]`)
   }
 }
 
 function onMaterialScanned(code) {
   materialCode.value = code.trim()
-  submitStockCheckItem()
+  focusQty()
 }
 
-function handleMaterialEnter() {
-  if (materialCode.value) {
-    submitStockCheckItem()
-  }
+function focusQty() {
+  if (!materialCode.value.trim()) return
+  nextTick(() => qtyInputRef.value?.focus())
 }
 
 function adjustQty(delta) {
-  actualQty.value = Math.max(0, actualQty.value + delta)
+  actualQty.value = Math.max(0, (actualQty.value || 0) + delta)
 }
 
 async function submitStockCheckItem() {
-  if (!selectedCheckId.value) {
+  if (submitting.value) return
+  if (!selectedCheckId.value || !currentCheckInfo.value) {
     playErrorSound()
-    ElMessage.warning('请先选择或扫描目标盘点单')
+    ElMessage.warning('请先选择盘点单')
     return
   }
   const code = materialCode.value.trim()
@@ -279,67 +311,62 @@ async function submitStockCheckItem() {
     materialInputRef.value?.focus()
     return
   }
-
-  // 构造录入请求体
-  const payload = {
-    check_id: selectedCheckId.value,
-    items: [
-      {
-        material_code: code,
-        material_id: 0, // 后端根据编码或条码解析
-        location_code: currentLocationCode.value || undefined,
-        actual_qty: actualQty.value
-      }
-    ]
-  }
-
-  submitting.value = true
-
-  if (!isOnline.value) {
-    addOfflineQueueItem(
-      'stock_check',
-      `盘点[${currentCheckInfo.value?.check_no || selectedCheckId.value}]: ${code} 实盘=${actualQty.value}`,
-      payload
-    )
-    playSuccessSound()
-    ElMessage.success('处于离线模式，实盘录入已暂存至离线队列')
-    pushCheckRecord(code, actualQty.value, true)
-    postSubmitClean()
-    submitting.value = false
+  if (actualQty.value === null || actualQty.value === undefined || actualQty.value < 0) {
+    playErrorSound()
+    ElMessage.warning('请输入实盘数量')
     return
   }
 
+  // 编码型原始记录：离线时原样入队，同步时再解析成 material_id / location_id
+  const raw = {
+    check_id: selectedCheckId.value,
+    check_no: currentCheckInfo.value.check_no,
+    warehouse_id: currentCheckInfo.value.warehouse_id,
+    material_code: code,
+    location_code: currentLocationCode.value || '',
+    actual_qty: actualQty.value
+  }
+  const title = `盘点[${raw.check_no}]: ${code} 实盘=${raw.actual_qty}`
+  const idemKey = newIdempotencyKey()
+
+  submitting.value = true
   try {
-    const res = await entryStockCheck(selectedCheckId.value, payload)
-    if (res.code === 0) {
-      playSuccessSound()
-      ElMessage.success('实盘录入成功！')
-      pushCheckRecord(code, actualQty.value, false)
-      postSubmitClean()
+    if (!isOnline.value) {
+      queueOffline(raw, title, idemKey, '当前离线，实盘录入已暂存到离线队列，联网后请同步')
+      return
     }
+    const body = await buildStockCheckEntry(raw)
+    await entryStockCheck(raw.check_id, body, idemKey)
+    playSuccessSound()
+    ElMessage.success('实盘录入成功')
+    pushCheckRecord(raw, false)
+    postSubmitClean()
   } catch (err) {
-    playErrorSound()
-    if (!navigator.onLine || err.message?.includes('Network Error')) {
-      addOfflineQueueItem(
-        'stock_check',
-        `盘点[${currentCheckInfo.value?.check_no || selectedCheckId.value}]: ${code} 实盘=${actualQty.value}`,
-        payload
-      )
-      ElMessage.warning('网络中断，实盘录入已自动保存至离线队列')
-      pushCheckRecord(code, actualQty.value, true)
-      postSubmitClean()
+    if (isNetworkError(err)) {
+      queueOffline(raw, title, idemKey, '网络中断，实盘录入已暂存到离线队列，联网后请同步')
+    } else {
+      playErrorSound()
+      ElMessage.error(`录入失败：${apiErrorMessage(err)}`)
     }
   } finally {
     submitting.value = false
   }
 }
 
-function pushCheckRecord(material_code, actual_qty, isOffline) {
+function queueOffline(raw, title, idemKey, msg) {
+  addOfflineQueueItem('stock_check', title, raw, idemKey)
+  playSuccessSound()
+  ElMessage.warning(msg)
+  pushCheckRecord(raw, true)
+  postSubmitClean()
+}
+
+function pushCheckRecord(raw, isOffline) {
   checkItemsRecords.value.unshift({
-    material_code,
-    actual_qty,
-    check_no: currentCheckInfo.value?.check_no || `单号#${selectedCheckId.value}`,
-    location_code: currentLocationCode.value,
+    material_code: raw.material_code,
+    actual_qty: raw.actual_qty,
+    check_no: raw.check_no,
+    location_code: raw.location_code,
     time: new Date().toLocaleTimeString(),
     isOffline
   })
@@ -347,18 +374,17 @@ function pushCheckRecord(material_code, actual_qty, isOffline) {
 
 function postSubmitClean() {
   materialCode.value = ''
-  actualQty.value = 1
-  nextTick(() => {
-    materialInputRef.value?.focus()
-  })
+  actualQty.value = 0
+  nextTick(() => materialInputRef.value?.focus())
 }
 
 function resetInputs() {
   materialCode.value = ''
-  actualQty.value = 1
+  actualQty.value = 0
 }
 
 onMounted(() => {
+  loadWarehouses()
   loadActiveStockChecks()
 })
 </script>

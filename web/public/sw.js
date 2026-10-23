@@ -1,7 +1,7 @@
 // Copyright 2026 zhouhouping. All Rights Reserved.
 // ERP PWA Service Worker - v1.0.0
 
-const CACHE_NAME = 'erp-pda-cache-v1'
+const CACHE_NAME = 'erp-pda-cache-v2'
 const PRECACHE_ASSETS = [
   '/',
   '/index.html',
@@ -66,22 +66,24 @@ self.addEventListener('fetch', (event) => {
     return
   }
 
-  // Navigation Requests (HTML / SPA routes like /pda, /pda/inbound):
-  // Network first -> fallback to cached /index.html
+  // Navigation Requests (SPA routes like /pda, /pda/inbound):
+  // Network first -> 离线时统一回退到缓存的 index.html（SPA 外壳），由前端路由接管
   if (request.mode === 'navigate') {
     event.respondWith(
       fetch(request)
         .then((response) => {
           if (response && response.status === 200) {
             const responseClone = response.clone()
-            caches.open(CACHE_NAME).then((cache) => cache.put(request, responseClone))
+            caches.open(CACHE_NAME).then((cache) => cache.put('/index.html', responseClone))
           }
           return response
         })
         .catch(async () => {
-          const cachedResponse = await caches.match(request)
-          if (cachedResponse) return cachedResponse
-          return caches.match('/index.html') || caches.match('/')
+          const shell = (await caches.match('/index.html')) || (await caches.match('/'))
+          return shell || new Response('当前离线，且尚未缓存应用页面，请联网后重新打开。', {
+            status: 503,
+            headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+          })
         })
     )
     return

@@ -71,7 +71,11 @@
           <div class="item-details">
             <div v-if="item.payload.material_code" class="detail-row">
               <span class="k">物料:</span>
-              <span class="v">{{ item.payload.material_code }} ({{ item.payload.qty }}件)</span>
+              <span class="v">{{ item.payload.material_code }} ({{ item.payload.qty ?? item.payload.actual_qty }}件)</span>
+            </div>
+            <div v-if="item.payload.check_no" class="detail-row">
+              <span class="k">盘点单:</span>
+              <span class="v">{{ item.payload.check_no }} / {{ item.payload.location_code || '不指定库位' }}</span>
             </div>
             <div v-if="item.payload.warehouse_code" class="detail-row">
               <span class="k">仓库/库位:</span>
@@ -125,16 +129,21 @@ import {
 } from '@/utils/pdaOffline'
 import { isOnline } from '@/utils/pwa'
 import { inboundScan, outboundScan, entryStockCheck } from '@/api/warehouse'
+import { buildStockCheckEntry, apiErrorMessage } from '@/utils/pdaResolve'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const syncing = ref(false)
 const queueList = computed(() => offlineQueue.value || [])
 
-// 映射各业务类型的实际 API Handler
+// 映射各业务类型的实际 API Handler；重发时带上入队时生成的幂等键
 const apiHandlers = {
   inbound: (payload, idempKey) => inboundScan(payload, idempKey),
   outbound: (payload, idempKey) => outboundScan(payload, idempKey),
-  stock_check: (payload, idempKey) => entryStockCheck(payload.check_id, payload, idempKey)
+  // 盘点记录离线时只存了编码，同步时再解析为 material_id / location_id
+  stock_check: async (payload, idempKey) => {
+    const body = await buildStockCheckEntry(payload)
+    return entryStockCheck(payload.check_id, body, idempKey)
+  }
 }
 
 function getTypeLabel(type) {
@@ -204,9 +213,9 @@ async function syncSingleItem(item) {
     updateQueueItem(item.id, {
       status: 'failed',
       retryCount: (item.retryCount || 0) + 1,
-      lastError: err.message || '网络或接口异常'
+      lastError: apiErrorMessage(err)
     })
-    ElMessage.error(`同步失败: ${err.message || '接口错误'}`)
+    ElMessage.error(`同步失败: ${apiErrorMessage(err)}`)
   }
 }
 

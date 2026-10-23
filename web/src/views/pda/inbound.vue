@@ -15,6 +15,8 @@
       </div>
     </div>
 
+    <ScanSupportBanner />
+
     <!-- 扫码录入核心表单区 -->
     <div class="pda-form-card">
       <!-- 仓库与库位选择 -->
@@ -73,7 +75,7 @@
             </template>
           </el-input>
 
-          <BarcodeScanner @scan="onBarcodeScanned">
+          <BarcodeScanner listen-hardware @scan="onBarcodeScanned">
             <template #trigger="{ open }">
               <el-button type="primary" size="large" class="camera-btn" @click="open">
                 <el-icon :size="20"><Aim /></el-icon>
@@ -185,13 +187,17 @@
 
 <script setup>
 import { ref, reactive, onMounted, nextTick } from 'vue'
+import { useRoute } from 'vue-router'
 import { listWarehouses, listLocations } from '@/api/mdm'
 import { inboundScan } from '@/api/warehouse'
 import { isOnline } from '@/utils/pwa'
-import { addOfflineQueueItem } from '@/utils/pdaOffline'
+import { addOfflineQueueItem, isNetworkError, newIdempotencyKey } from '@/utils/pdaOffline'
 import { playSuccessSound, playErrorSound } from '@/utils/sound'
 import BarcodeScanner from '@/components/pda/BarcodeScanner.vue'
+import ScanSupportBanner from '@/components/pda/ScanSupportBanner.vue'
 import { ElMessage } from 'element-plus'
+
+const route = useRoute()
 
 const warehouseList = ref([])
 const locationList = ref([])
@@ -212,29 +218,29 @@ const form = reactive({
 async function loadWarehouses() {
   try {
     const res = await listWarehouses()
-    if (res.code === 0) {
-      warehouseList.value = res.data || []
-      if (warehouseList.value.length > 0) {
-        form.warehouse_code = warehouseList.value[0].code
-        loadLocations(warehouseList.value[0].id)
-      }
-    }
+    warehouseList.value = res.data || []
   } catch (e) {
     warehouseList.value = []
   }
+  // 从“快速查库”跳转时预填仓库 / 库位 / 物料
+  const qWarehouseId = Number(route.query.warehouse_id) || null
+  const target = warehouseList.value.find((w) => w.id === qWarehouseId) || warehouseList.value[0]
+  if (target) {
+    form.warehouse_code = target.code
+    await loadLocations(target.id, route.query.location ? String(route.query.location) : '')
+  }
+  if (route.query.code) form.material_code = String(route.query.code)
 }
 
-async function loadLocations(warehouseId) {
+async function loadLocations(warehouseId, preferCode = '') {
   try {
     const res = await listLocations({ warehouse_id: warehouseId })
-    if (res.code === 0) {
-      locationList.value = res.data || []
-      form.location_code = locationList.value.length > 0 ? locationList.value[0].location_code : ''
-    }
+    locationList.value = res.data || []
   } catch (e) {
     locationList.value = []
-    form.location_code = ''
   }
+  const preferred = locationList.value.find((l) => l.location_code === preferCode)
+  form.location_code = preferred?.location_code || locationList.value[0]?.location_code || ''
 }
 
 function onWarehouseChange() {
@@ -244,23 +250,20 @@ function onWarehouseChange() {
 }
 
 function adjustQty(delta) {
-  form.qty = Math.max(1, form.qty + delta)
+  form.qty = Math.max(1, (form.qty || 1) + delta)
 }
 
 function onBarcodeScanned(code) {
   form.material_code = code.trim()
-  if (autoSubmit.value) {
-    submitInbound()
-  }
+  if (autoSubmit.value) submitInbound()
 }
 
 function handleEnterKey() {
-  if (form.material_code) {
-    submitInbound()
-  }
+  if (form.material_code && autoSubmit.value) submitInbound()
 }
 
 async function submitInbound() {
+  if (submitting.value) return
   const materialCode = form.material_code.trim()
   if (!materialCode) {
     playErrorSound()
@@ -286,48 +289,47 @@ async function submitInbound() {
     qty: form.qty,
     unit_cost: form.unit_cost || 0
   }
+  const title = `入库: ${materialCode} × ${payload.qty}`
+  // 在线提交与离线重发共用同一个幂等键，超时后重发不会重复入库
+  const idemKey = newIdempotencyKey()
 
   submitting.value = true
-
-  // 若当前离线，直接写入离线队列
-  if (!isOnline.value) {
-    addOfflineQueueItem('inbound', `入库: ${materialCode} × ${form.qty}`, payload)
-    playSuccessSound()
-    ElMessage.success('当前处于离线模式，入库记录已暂存至离线队列')
-    pushRecentRecord(materialCode, form.qty, true)
-    postSubmitClean()
-    submitting.value = false
-    return
-  }
-
   try {
-    const res = await inboundScan(payload)
-    if (res.code === 0) {
-      playSuccessSound()
-      ElMessage.success(`入库成功！库存增加至 ${res.data?.after_qty || form.qty}`)
-      pushRecentRecord(materialCode, form.qty, false, res.data?.after_qty)
-      postSubmitClean()
+    if (!isOnline.value) {
+      queueOffline(payload, title, idemKey, '当前离线，入库记录已暂存到离线队列，联网后请同步')
+      return
     }
+    const res = await inboundScan(payload, idemKey)
+    playSuccessSound()
+    ElMessage.success(`入库成功，结存 ${res.data?.after_qty ?? '-'}`)
+    pushRecentRecord(payload, false, res.data?.after_qty)
+    postSubmitClean()
   } catch (err) {
-    playErrorSound()
-    // 网络异常时支持转存离线队列
-    if (!navigator.onLine || err.message?.includes('Network Error')) {
-      addOfflineQueueItem('inbound', `入库: ${materialCode} × ${form.qty}`, payload)
-      ElMessage.warning('网络中断，入库记录已自动保存至离线队列')
-      pushRecentRecord(materialCode, form.qty, true)
-      postSubmitClean()
+    if (isNetworkError(err)) {
+      queueOffline(payload, title, idemKey, '网络中断，入库记录已暂存到离线队列，联网后请同步')
+    } else {
+      // 业务错误（物料不存在、库位不符等）已由请求拦截器提示，不入离线队列
+      playErrorSound()
     }
   } finally {
     submitting.value = false
   }
 }
 
-function pushRecentRecord(material_code, qty, isOffline, afterQty) {
+function queueOffline(payload, title, idemKey, msg) {
+  addOfflineQueueItem('inbound', title, payload, idemKey)
+  playSuccessSound()
+  ElMessage.warning(msg)
+  pushRecentRecord(payload, true)
+  postSubmitClean()
+}
+
+function pushRecentRecord(payload, isOffline, afterQty) {
   recentRecords.value.unshift({
-    material_code,
-    qty,
-    warehouse_code: form.warehouse_code,
-    location_code: form.location_code,
+    material_code: payload.material_code,
+    qty: payload.qty,
+    warehouse_code: payload.warehouse_code,
+    location_code: payload.location_code,
     time: new Date().toLocaleTimeString(),
     isOffline,
     afterQty
@@ -337,9 +339,7 @@ function pushRecentRecord(material_code, qty, isOffline, afterQty) {
 function postSubmitClean() {
   form.material_code = ''
   form.qty = 1
-  nextTick(() => {
-    materialInputRef.value?.focus()
-  })
+  nextTick(() => materialInputRef.value?.focus())
 }
 
 function resetForm() {
