@@ -10,6 +10,7 @@ import (
 
 type PurPurchaseOrder struct {
 	ID           int64           `json:"id"`
+	TenantID     int64           `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	OrderNo      string          `json:"order_no"`
 	SupplierID   int64           `json:"supplier_id"`
 	Status       int             `json:"status"`
@@ -24,6 +25,7 @@ type PurPurchaseOrder struct {
 
 type PurPurchaseOrderItem struct {
 	ID           int64           `json:"id"`
+	TenantID     int64           `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	OrderID      int64           `json:"order_id"`
 	MaterialID   int64           `json:"material_id"`
 	Qty          decimal.Decimal `json:"qty"`
@@ -34,6 +36,7 @@ type PurPurchaseOrderItem struct {
 
 type PurPurchaseInbound struct {
 	ID          int64           `json:"id"`
+	TenantID    int64           `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	InboundNo   string          `json:"inbound_no"`
 	OrderID     int64           `json:"order_id"`
 	SupplierID  int64           `json:"supplier_id"`

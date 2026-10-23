@@ -10,26 +10,28 @@ import (
 
 // SalSalesOrder 销售订单主表（迁移 0016）。
 type SalSalesOrder struct {
-	ID             int64            `json:"id"`
-	OrderNo        string           `json:"order_no"`
-	CustomerID     int64            `json:"customer_id"`
-	Status         int              `json:"status"`
-	TotalAmount    decimal.Decimal  `json:"total_amount"`
-	DiscountAmount decimal.Decimal  `json:"discount_amount"`
-	PlanDeliveryAt *time.Time       `json:"plan_delivery_at"`
-	ApprovedAt     *time.Time       `json:"approved_at"`
-	ApprovedBy     *int64           `json:"approved_by"`
-	Remark         string           `json:"remark"`
-	CreatedBy      int64            `json:"created_by"`
-	DeptID         int64            `json:"dept_id"`
-	CreatedAt      time.Time        `json:"created_at"`
-	UpdatedAt      time.Time        `json:"updated_at"`
-	DeletedAt      *time.Time       `json:"deleted_at"`
+	ID             int64           `json:"id"`
+	TenantID       int64           `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
+	OrderNo        string          `json:"order_no"`
+	CustomerID     int64           `json:"customer_id"`
+	Status         int             `json:"status"`
+	TotalAmount    decimal.Decimal `json:"total_amount"`
+	DiscountAmount decimal.Decimal `json:"discount_amount"`
+	PlanDeliveryAt *time.Time      `json:"plan_delivery_at"`
+	ApprovedAt     *time.Time      `json:"approved_at"`
+	ApprovedBy     *int64          `json:"approved_by"`
+	Remark         string          `json:"remark"`
+	CreatedBy      int64           `json:"created_by"`
+	DeptID         int64           `json:"dept_id"`
+	CreatedAt      time.Time       `json:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
+	DeletedAt      *time.Time      `json:"deleted_at"`
 }
 
 // SalSalesOrderItem 销售订单明细：amount = qty*price*(1-discount)（服务端计算）。
 type SalSalesOrderItem struct {
 	ID         int64           `json:"id"`
+	TenantID   int64           `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	OrderID    int64           `json:"order_id"`
 	MaterialID int64           `json:"material_id"`
 	Qty        decimal.Decimal `json:"qty"`
@@ -44,6 +46,7 @@ type SalSalesOrderItem struct {
 // 只豁免 NULL，空串会被当作相同键拒绝第二次出库。
 type SalSalesOutbound struct {
 	ID             int64           `json:"id"`
+	TenantID       int64           `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	OutboundNo     string          `json:"outbound_no"`
 	OrderID        int64           `json:"order_id"`
 	CustomerID     int64           `json:"customer_id"`
@@ -59,6 +62,7 @@ type SalSalesOutbound struct {
 // returned_qty 累计已退货数量（退货入库按 unit_cost 回填库存）。
 type SalSalesOutboundItem struct {
 	ID          int64           `json:"id"`
+	TenantID    int64           `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	OutboundID  int64           `json:"outbound_id"`
 	MaterialID  int64           `json:"material_id"`
 	Qty         decimal.Decimal `json:"qty"`
@@ -70,6 +74,7 @@ type SalSalesOutboundItem struct {
 // SalSalesReturn 销售退货单：10 待入库 → 20 已入库 → 50 已取消。
 type SalSalesReturn struct {
 	ID          int64           `json:"id"`
+	TenantID    int64           `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	ReturnNo    string          `json:"return_no"`
 	OutboundID  int64           `json:"outbound_id"`
 	CustomerID  int64           `json:"customer_id"`
@@ -84,6 +89,7 @@ type SalSalesReturn struct {
 // SalSalesReturnItem 退货明细：amount = qty*price（原销售单价，冲减应收口径）。
 type SalSalesReturnItem struct {
 	ID             int64           `json:"id"`
+	TenantID       int64           `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	ReturnID       int64           `json:"return_id"`
 	OutboundItemID int64           `json:"outbound_item_id"`
 	MaterialID     int64           `json:"material_id"`

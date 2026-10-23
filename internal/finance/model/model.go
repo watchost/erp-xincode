@@ -10,6 +10,7 @@ import (
 
 type FinCostCard struct {
 	ID         int64           `json:"id"`
+	TenantID   int64           `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	ProductID  int64           `json:"product_id"`
 	CostType   string          `json:"cost_type"`
 	Amount     decimal.Decimal `json:"amount"`
@@ -65,6 +66,7 @@ type FinAccountEntry struct {
 
 type FinBudget struct {
 	ID         int64           `json:"id"`
+	TenantID   int64           `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	BudgetNo   string          `json:"budget_no"`
 	BudgetType string          `json:"budget_type"`
 	Amount     decimal.Decimal `json:"amount"`
@@ -108,21 +110,21 @@ type FinReceivable struct {
 }
 
 type FinPayable struct {
-	ID          int64           `json:"id"`
-	PayableNo   string          `json:"payable_no"`
-	SupplierID  int64           `json:"supplier_id"`
-	SourceType  int16           `json:"source_type"`
-	SourceNo    string          `json:"source_no"`
-	Amount      decimal.Decimal `json:"amount"`
-	PaidAmount  decimal.Decimal `json:"paid_amount"`
-	DueAt       time.Time       `json:"due_at"`
-	Period      string          `json:"period"`
-	Status      int16           `json:"status"`
-	Remark      string          `json:"remark"`
-	TenantID    int64           `json:"tenant_id"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
-	DeletedAt   *time.Time      `json:"-" gorm:"index"`
+	ID         int64           `json:"id"`
+	PayableNo  string          `json:"payable_no"`
+	SupplierID int64           `json:"supplier_id"`
+	SourceType int16           `json:"source_type"`
+	SourceNo   string          `json:"source_no"`
+	Amount     decimal.Decimal `json:"amount"`
+	PaidAmount decimal.Decimal `json:"paid_amount"`
+	DueAt      time.Time       `json:"due_at"`
+	Period     string          `json:"period"`
+	Status     int16           `json:"status"`
+	Remark     string          `json:"remark"`
+	TenantID   int64           `json:"tenant_id"`
+	CreatedAt  time.Time       `json:"created_at"`
+	UpdatedAt  time.Time       `json:"updated_at"`
+	DeletedAt  *time.Time      `json:"-" gorm:"index"`
 }
 
 type FinReceipt struct {
@@ -155,6 +157,7 @@ type FinPayment struct {
 
 type FinSettlement struct {
 	ID             int64           `json:"id"`
+	TenantID       int64           `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	SettlementNo   string          `json:"settlement_no"`
 	SettlementType int16           `json:"settlement_type"` // 1=收款核销 2=付款核销
 	BillID         int64           `json:"bill_id"`         // receipt_id 或 payment_id
@@ -169,4 +172,3 @@ func (FinPayable) TableName() string    { return "fin_payable" }
 func (FinReceipt) TableName() string    { return "fin_receipt" }
 func (FinPayment) TableName() string    { return "fin_payment" }
 func (FinSettlement) TableName() string { return "fin_settlement" }
-

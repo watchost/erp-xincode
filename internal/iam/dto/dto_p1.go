@@ -74,6 +74,7 @@ type AuditLogListReq struct {
 	UserID    *int64 `form:"user_id"`
 	Module    string `form:"module"`
 	Action    string `form:"action"`
+	TraceID   string `form:"trace_id"`              // P3 §4.3：按 trace_id 追溯
 	StartTime string `form:"start_time"` // RFC3339 或 2006-01-02 15:04:05
 	EndTime   string `form:"end_time"`
 	Page      int    `form:"page" binding:"required,min=1"`

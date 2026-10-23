@@ -74,6 +74,8 @@ type AuditLogRepository interface {
 
 // AuditQuery 是审计日志分页查询条件（时间为闭区间）。
 type AuditQuery struct {
+	TenantID  *int64 // P3 §4.2：非空时只查该租户（审计查询接口总是传当前租户）
+	TraceID   string // P3 §4.3：按 trace_id 追溯一次请求
 	UserID    *int64
 	Module    string
 	Action    string
@@ -378,6 +380,12 @@ func (r *auditLogRepo) ListPage(q AuditQuery) ([]model.SysAuditLog, int64, error
 	var logs []model.SysAuditLog
 	var total int64
 	query := r.db.Model(&model.SysAuditLog{})
+	if q.TenantID != nil {
+		query = query.Where("tenant_id = ?", *q.TenantID)
+	}
+	if q.TraceID != "" {
+		query = query.Where("trace_id = ?", q.TraceID)
+	}
 	if q.UserID != nil {
 		query = query.Where("user_id = ?", *q.UserID)
 	}

@@ -10,6 +10,7 @@ import (
 
 type ProWorkOrder struct {
 	ID            int64           `json:"id"`
+	TenantID      int64           `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	WorkOrderNo   string          `json:"work_order_no"`
 	ProductID     int64           `json:"product_id"`
 	PlanQty       decimal.Decimal `json:"plan_qty"`
@@ -28,6 +29,7 @@ type ProWorkOrder struct {
 
 type ProWorkOrderMaterial struct {
 	ID          int64           `json:"id"`
+	TenantID    int64           `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	WorkOrderID int64           `json:"work_order_id"`
 	MaterialID  int64           `json:"material_id"`
 	PlanQty     decimal.Decimal `json:"plan_qty"`
@@ -37,6 +39,7 @@ type ProWorkOrderMaterial struct {
 
 type ProBom struct {
 	ID             int64     `json:"id"`
+	TenantID       int64     `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	ProductID      int64     `json:"product_id"`
 	BomVersion     string    `json:"bom_version"`
 	IsActive       bool      `json:"is_active"`
@@ -48,6 +51,7 @@ type ProBom struct {
 
 type ProBomItem struct {
 	ID         int64           `json:"id"`
+	TenantID   int64           `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	BomID      int64           `json:"bom_id"`
 	MaterialID int64           `json:"material_id"`
 	Qty        decimal.Decimal `json:"qty"`
@@ -59,6 +63,7 @@ type ProBomItem struct {
 // ProProductionReceipt 生产入库单（成品/半成品完工入库）。
 type ProProductionReceipt struct {
 	ID          int64           `json:"id"`
+	TenantID    int64           `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	ReceiptNo   string          `json:"receipt_no"`
 	WorkOrderID int64           `json:"work_order_id"`
 	MaterialID  int64           `json:"material_id"`

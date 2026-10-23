@@ -69,6 +69,7 @@ type IAMService struct {
 	deptRepo      repository.DepartmentRepository
 	auditRepo     repository.AuditLogRepository
 	attemptRepo   repository.LoginAttemptRepository
+	tenantCheck   func(ctx context.Context, tenantID int64, write bool) error // 可选：P3 租户状态检查
 	jwtSecret     string
 	accessExpire  time.Duration
 	refreshExpire time.Duration
@@ -157,6 +158,12 @@ func (s *IAMService) loadPrincipal(user *model.SysUser) (principal, error) {
 }
 
 func (s *IAMService) issueTokens(ctx context.Context, user *model.SysUser) (dto.LoginRes, error) {
+	// P3 §4.2：租户停用或过期时禁止登录/刷新（登录与 refresh 都经过这里）
+	if s.tenantCheck != nil {
+		if err := s.tenantCheck(ctx, user.TenantID, true); err != nil {
+			return dto.LoginRes{}, err
+		}
+	}
 	p, err := s.loadPrincipal(user)
 	if err != nil {
 		return dto.LoginRes{}, err
@@ -286,4 +293,9 @@ func (s *IAMService) ResolveDataScope(ctx context.Context, ownerCol, deptCol str
 // resolveUserScope 用户管理专用：属主列是 sys_user.id，部门列 dept_id。
 func (s *IAMService) resolveUserScope(ctx context.Context) (datascope.Params, error) {
 	return s.ResolveDataScope(ctx, "id", "dept_id")
+}
+
+// SetTenantChecker 装配租户状态检查（停用/过期租户禁止登录）。
+func (s *IAMService) SetTenantChecker(fn func(ctx context.Context, tenantID int64, write bool) error) {
+	s.tenantCheck = fn
 }

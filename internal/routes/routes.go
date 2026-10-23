@@ -16,6 +16,8 @@ import (
 	"erp-system/internal/pkg/middleware"
 	"erp-system/internal/pkg/printer"
 	"erp-system/internal/workflow"
+	"erp-system/internal/message"
+	"erp-system/internal/pkg/tenant"
 	productionHandler "erp-system/internal/production/handler"
 	purchaseHandler "erp-system/internal/purchase/handler"
 	salesHandler "erp-system/internal/sales/handler"
@@ -57,6 +59,9 @@ const (
 	PermPurchaseOrderSubmit  = "purchase:order:submit"
 	PermWorkflowTask         = "workflow:task"
 	PermWorkflowDefinition   = "workflow:definition"
+	PermMessageView          = "message:view"
+	PermTenantConfig         = "tenant:config"
+	PermPlatformTenant       = "platform:tenant"
 	PermPurchaseOrderCancel  = "purchase:order:cancel"
 	PermPurchaseInbound      = "purchase:inbound"
 
@@ -127,6 +132,9 @@ type Deps struct {
 	OpenAPI      *openapiHandler.OpenAPIHandler
 	Printer      *printer.PrinterHandler
 	Workflow     *workflow.Handler
+	Message      *message.Handler
+	Tenant       *tenant.Handler
+	TenantGuard  gin.HandlerFunc // P3 §4.2：停用租户全部拒绝、过期租户拒绝写
 }
 
 // RegisterRoutes wires all HTTP endpoints.
@@ -170,6 +178,9 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 
 	api := r.Group("/api/v1")
 	api.Use(middleware.JWTAuth(d.JWTSecret, d.JWTBlacklist))
+	if d.TenantGuard != nil {
+		api.Use(d.TenantGuard)
+	}
 	if d.ForceChange != nil {
 		api.Use(middleware.ForcePasswordChange(d.ForceChange))
 	}

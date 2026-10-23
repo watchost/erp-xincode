@@ -228,7 +228,92 @@ OpenAPI 独立 Bearer token 校验、scope、client_secret 哈希、SSRF 防护�
 
 默认部署：`purchase_order` v1 = 部门负责人（或签）→ 管理层角色 `manager`（或签）。
 
-## 13. 后续模块
+## 13. 多租户、审计日志、站内消息（P3 §4.2–§4.4，2026-10-23 后端已实现）
+
+> 前端任务 6（通知铃铛、消息中心）以 §13.3 为准。迁移：`0022_tenant_audit_message`。
+
+### 13.1 多租户 `/admin/tenants`、`/tenant/current`
+
+| 方法 | 路径 | 权限 | 请求 | 说明 |
+|---|---|---|---|---|
+| GET | /tenant/current | 登录即可 | — | 当前租户 `{id, code, name, status, expire_at, config}` |
+| PUT | /tenant/current | `tenant:config` | `{name?, config?}` | 租户管理员改本租户名称/配置（不能改状态、过期时间） |
+| GET | /admin/tenants | `platform:tenant` | — | 租户列表 |
+| POST | /admin/tenants | `platform:tenant` | `{code, name, expire_at?, config?, admin_username, admin_password}` | 新建租户：复制默认租户的科目表（parent_id 按编码重映射）与已部署流程定义，并创建该租户的 admin 用户 |
+| PUT | /admin/tenants/:id | `platform:tenant` | `{name?, expire_at?, config?}` | 修改租户 |
+| POST | /admin/tenants/:id/disable · /enable | `platform:tenant` | — | 停用/启用（默认租户 0 不能停用） |
+| GET | /admin/tenants/:id/stats | `platform:tenant` | — | `{users, materials, purchase_orders, sales_orders}` |
+
+- `platform:tenant` 接口额外要求调用者属于默认租户 0（`sys_role` 是全局表，其他租户的 admin 也有角色 1，所以单靠权限码不够），否则 81004。
+- `config` 为自由 JSON，约定键：`logo`、`currency`、`period_rule`、`plan`。
+- 停用租户：所有接口 403（81002），且禁止登录/刷新 token；过期租户：GET 放行，写操作 403（81003），禁止登录。
+- 用户名保持**全局唯一**（登录不带租户），新建租户时管理员用户名冲突返回 81006。
+- 错误码：81001 租户不存在｜81002 已停用｜81003 已过期｜81004 仅平台可操作｜81005 编码重复｜81006 用户名已被使用｜81007 默认租户不能停用。
+
+### 13.2 审计日志 `GET /iam/audit-logs`
+
+权限 `iam:audit:view`。新增查询参数 `trace_id`（按一次请求追溯）；结果只包含当前租户的记录。
+审计中间件对 `/api/v1` 下全部 POST/PUT/PATCH/DELETE 异步落库，记录用户、租户、IP、UA、模块、动作、状态码、耗时、trace_id、参数摘要：
+
+- JSON 请求体（≤4KB）递归脱敏后保存，并合并路径参数到 `_path_params`；
+- 非 JSON / 超过 4KB / 空体：保存摘要 `{_body: not_json|too_large_or_chunked|empty|unparsable, _content_type, _size, _path_params, _query}`，保证每次写操作都有可定位到单据的记录；
+- 脱敏键（大小写不敏感，任意层级）：password、old_password、new_password、admin_password、password_hash、token、access_token、refresh_token、captcha_code、secret、client_secret、api_key、apikey、authorization、private_key、bank_account、card_no、id_card。
+- 限制：写库是旁路异步，进程被强杀时可能丢失最后几条；登录/刷新在 JWT 组外，由 IAM service 自行写审计（原有行为）。
+
+### 13.3 站内消息 `/messages`（权限 `message:view`，所有角色已授予）
+
+| 方法 | 路径 | 请求 | 说明 |
+|---|---|---|---|
+| GET | /messages?category=&unread=1&page=&page_size= | — | 我的消息，按时间倒序，分页结构同 `response.Page` |
+| GET | /messages/unread-count | — | `{total, by_category: {approval_todo: n, stock_low: n, ...}}`（通知铃铛） |
+| POST | /messages/:id/read | — | 单条已读（不是自己的或其他租户的消息返回 82001） |
+| POST | /messages/read-all | — | 全部已读，返回 `{updated}` |
+| GET | /messages/subscriptions | — | 我的外部渠道订阅 |
+| PUT | /messages/subscriptions | `{category, channel, target, enabled}` | 按 (类别, 渠道) 新增或更新订阅 |
+
+消息字段：`id, category, title, content, biz_type, biz_no, link, is_read, read_at, created_at`。`link` 是前端跳转路径（审批待办为 `/workflow/instances/:no`，库存预警为 `/warehouse/inventory?material_id=`）。
+
+**类别与触发事件：**
+
+| category | 触发 | 接收人 |
+|---|---|---|
+| `approval_todo` | 审批流新建待办：提交、进入下一级、转办、加签 | 新待办的审批人 |
+| `stock_low` | 出库后物料跨仓总库存从 ≥ 安全库存跌破到 < 安全库存（只在跌破那一次提醒） | 本租户 warehouse、purchase 角色用户；都没有时发给 admin |
+| `system` | 预留 | — |
+
+- 安全库存取物料已有字段 `mdm_material.min_stock`，为空不预警。
+- 站内信与业务在同一事务写入：业务回滚，消息一起回滚。
+
+**外部渠道**（`channel`）：`email`、`dingtalk`、`wecom`、`webhook`。订阅了外部渠道的消息由后台派发器（每 10 秒，`FOR UPDATE SKIP LOCKED`）在事务提交后发送，结果写入 `channel_result`：
+
+- `webhook` / `dingtalk` / `wecom`：向订阅的 https 地址 POST JSON（钉钉/企业微信为群机器人 text 消息格式），超时 5 秒；**未实现钉钉加签**；未在真实钉钉/企业微信环境验证；
+- `email`：**未接入 SMTP**，始终记为 `skipped: 未配置 SMTP 发信服务`，不会伪造发送成功；
+- 订阅地址必须是 `https://`，邮箱必须含 `@`，否则 82004。
+- 错误码：82001 消息不存在｜82002 未知类别｜82003 不支持的渠道｜82004 订阅目标不合法。
+
+### 13.4 默认采购审批流的前置条件（任务 2 遗留核实）
+
+- `manager` 角色在迁移 `0001_init` 中已存在（`('manager', '管理层', 1)`），可以通过 `PUT /iam/users/:id/roles` 分配给用户；**但种子数据里没有任何用户拥有该角色**。
+- 第一级"部门负责人"要求发起人所在部门（或上级部门）设置了 `leader_id`。
+- 两者任一不满足，提交采购审批会返回 80009（找不到审批人）并整体回滚，订单保持草稿。部署后需先：给至少一名用户分配 `manager` 角色，并为部门设置负责人。没有为此添加虚构的种子用户。
+- 新建租户会复制该流程定义，新租户同样需要完成上述配置。
+
+### 13.5 租户隔离的实现与已知缺口（如实记录）
+
+**已实现：**
+- `sys_tenant`；29 张业务表补 `tenant_id`（现有数据归属租户 0）；业务编码/单号唯一约束改为按租户唯一（索引名不变）。
+- GORM 插件 `internal/pkg/tenant`：context 中带租户时，对含 `tenant_id` 的表自动追加过滤（Query/Row/Update/Delete，支持表别名），创建时强制写入上下文租户（忽略调用方传入值）；表有 `tenant_id` 但模型缺 `TenantID` 字段时，非 0 租户写入直接报错（fail-closed）。
+- JWT → context 已带 `tenant_id`；`TenantGuard` 中间件；登录/刷新检查租户状态。
+- 审批流（定义/实例/审批人解析）、审计查询、站内消息全部显式按租户过滤，不依赖插件。
+
+**未达成（§4.8"两个租户数据完全隔离"目前不满足）：**
+- 插件依赖语句的 context。现有 repository 有约 **281 个方法不接收 ctx**，直接用 `r.db` 查询（统计于 2026-10-23），这些查询**不会被过滤**。因此：事务内（`TxManager.WithTx` 会传 ctx）的读写、以及新写的 `db.WithContext(ctx)` 查询是隔离的；**大部分列表/详情读接口仍可跨租户读取**。测试 `TestTenantIsolation_KnownGap_RepoWithoutCtx` 专门断言这个缺口存在。
+- `db.Raw` / `db.Exec` 手写 SQL 不会被插件改写，需要手工带 `tenant_id`。
+- 在完成下面的改造之前，**不要在生产环境开通第二个租户**。
+
+**补齐方案（建议作为独立任务）：** repository 方法统一增加 `ctx context.Context` 首参并使用 `r.db.WithContext(ctx)`，按模块分批（mdm → warehouse → purchase/sales → production → finance → 其余），每批补一组跨租户读取的集成测试；全部完成后把上面的缺口测试改为断言查不到。
+
+## 14. 后续模块
 
 - 销售 `/sales`：P2，详见 [features/sales.md](features/sales.md#3-接口)。
 - 消息 `/messages`：P3，支持未读数、单条已读、全部已读。

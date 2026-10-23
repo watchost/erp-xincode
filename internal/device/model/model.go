@@ -15,7 +15,7 @@ type DevDevice struct {
 	Status          int        `json:"status"`
 	LastHeartbeat   time.Time  `json:"last_heartbeat"`
 	Config          []byte     `json:"config"`
-	APIKey          string     `json:"-"`                // WebSocket 接入凭据
+	APIKey          string     `json:"-"` // WebSocket 接入凭据
 	APISecretHash   string     `json:"-" gorm:"column:api_secret_hash"`
 	LastIP          string     `json:"last_ip"`
 	FirmwareVersion string     `json:"firmware_version"`
@@ -40,6 +40,7 @@ type DevDeviceMessage struct {
 
 type DevDeviceLog struct {
 	ID        int64     `json:"id"`
+	TenantID  int64     `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	DeviceID  int64     `json:"device_id"`
 	EventType string    `json:"event_type"`
 	Content   []byte    `json:"content"`

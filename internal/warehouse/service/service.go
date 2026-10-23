@@ -56,7 +56,15 @@ type WarehouseService struct {
 	numbers         *bizno.Generator
 	idemp           IdempotencyGuard
 	finance         FinancePoster
+	stockAlert      StockAlerter // 可选：P3 §4.4 低于安全库存发站内信
 }
+
+// StockAlerter 出库后检查安全库存（由 message 包实现，在出库事务内调用）。
+type StockAlerter interface {
+	StockLowTx(ctx context.Context, tx *gorm.DB, materialID int64, outQty decimal.Decimal) error
+}
+
+func (s *WarehouseService) SetStockAlerter(a StockAlerter) { s.stockAlert = a }
 
 func NewWarehouseService(
 	txManager *db.TxManager,
@@ -362,6 +370,13 @@ func (s *WarehouseService) ApplyOutboundTx(ctx context.Context, tx *gorm.DB, in 
 					remain = remain.Sub(take)
 				}
 			}
+		}
+	}
+
+	// P3 §4.4：跌破安全库存时在同一事务内写站内信（出库回滚则消息一并回滚）
+	if s.stockAlert != nil {
+		if err := s.stockAlert.StockLowTx(ctx, tx, in.MaterialID, outQty); err != nil {
+			return dto.MoveResult{}, err
 		}
 	}
 

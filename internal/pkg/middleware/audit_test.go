@@ -106,3 +106,69 @@ func TestAuditNilSinkSkips(t *testing.T) {
 		t.Fatalf("期望 200，得到 %d", w.Code)
 	}
 }
+
+// P3 §4.3：非 JSON 请求体也要留下可追溯摘要（路径参数 + 查询串 + 体积）。
+func TestAuditSummaryForNonJSONBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	sink := &captureSink{ch: make(chan AuditEntry, 4)}
+	r := gin.New()
+	r.Use(Audit(sink))
+	r.POST("/api/v1/mdm/materials-import", func(c *gin.Context) { c.Status(http.StatusOK) })
+	r.POST("/api/v1/purchase/orders/:order_no/approve", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/mdm/materials-import?dry=1", bytes.NewBufferString("a,b\n1,2"))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=x")
+	r.ServeHTTP(httptest.NewRecorder(), req)
+	e := <-sink.ch
+	var got map[string]interface{}
+	if err := json.Unmarshal(e.ReqParam, &got); err != nil {
+		t.Fatalf("摘要不是合法 JSON: %v", err)
+	}
+	if got["_body"] != "not_json" || got["_query"] != "dry=1" {
+		t.Fatalf("非 JSON 请求应记摘要，实际 %+v", got)
+	}
+
+	// 空体 + 路径参数：能定位到具体单据
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/purchase/orders/PO001/approve", nil)
+	r.ServeHTTP(httptest.NewRecorder(), req)
+	e = <-sink.ch
+	got = map[string]interface{}{}
+	_ = json.Unmarshal(e.ReqParam, &got)
+	pp, _ := got["_path_params"].(map[string]interface{})
+	if got["_body"] != "empty" || pp["order_no"] != "PO001" {
+		t.Fatalf("空体写操作应记录路径参数，实际 %+v", got)
+	}
+}
+
+// P3 §4.3：新增敏感键（密钥/凭证/银行卡）脱敏，JSON 体合并路径参数。
+func TestAuditMasksNewSensitiveKeysAndMergesPathParams(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	sink := &captureSink{ch: make(chan AuditEntry, 4)}
+	r := gin.New()
+	r.Use(Audit(sink))
+	r.PUT("/api/v1/openapi/clients/:id", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	body := `{"name":"erp","client_secret":"s3cr3t","api_key":"k","bank_account":"6222","admin_password":"p","nested":{"Authorization":"Bearer x"}}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/openapi/clients/42", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(httptest.NewRecorder(), req)
+	e := <-sink.ch
+	var got map[string]interface{}
+	if err := json.Unmarshal(e.ReqParam, &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"client_secret", "api_key", "bank_account", "admin_password"} {
+		if got[k] != maskedValue {
+			t.Errorf("%s 应脱敏，实际 %v", k, got[k])
+		}
+	}
+	if n, _ := got["nested"].(map[string]interface{}); n["Authorization"] != maskedValue {
+		t.Errorf("嵌套 Authorization 应脱敏（大小写不敏感），实际 %v", n["Authorization"])
+	}
+	if got["name"] != "erp" {
+		t.Errorf("非敏感字段被破坏: %v", got["name"])
+	}
+	if pp, _ := got["_path_params"].(map[string]interface{}); pp["id"] != "42" {
+		t.Errorf("应合并路径参数 id=42，实际 %+v", got["_path_params"])
+	}
+}

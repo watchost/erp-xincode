@@ -108,3 +108,32 @@ func UserAgentFromContext(ctx context.Context) string {
 	}
 	return ""
 }
+
+// ---- P3 §4.2 多租户 ----
+
+type tenantCtxKey int
+
+const ctxKeySkipTenant tenantCtxKey = 1
+
+// TenantFromContext 返回 tenant_id 以及 context 中是否显式设置过租户。
+// 区分「租户 0（默认租户）」与「没有租户上下文（后台任务/登录前）」。
+func TenantFromContext(ctx context.Context) (int64, bool) {
+	if ctx == nil {
+		return 0, false
+	}
+	v, ok := ctx.Value(ctxKeyTenantID).(int64)
+	return v, ok
+}
+
+// WithSkipTenant 显式绕过租户过滤：仅供平台管理接口与跨租户后台任务（如消息派发器）使用。
+func WithSkipTenant(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeySkipTenant, true)
+}
+
+func SkipTenant(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(ctxKeySkipTenant).(bool)
+	return v
+}

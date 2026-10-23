@@ -28,6 +28,7 @@ import (
 	"erp-system/internal/pkg/bizno"
 	"erp-system/internal/pkg/db"
 	migratetool "erp-system/internal/pkg/migrate"
+	"erp-system/internal/pkg/tenant"
 
 	financeRepo "erp-system/internal/finance/repository"
 	financeService "erp-system/internal/finance/service"
@@ -72,6 +73,12 @@ var businessTables = []string{
 	"mdm_material",
 	"mdm_customer",
 	"mdm_material_category",
+	// P3：消息、审批运行数据（流程定义含 0021 种子，不清空）
+	"msg_message",
+	"msg_subscription",
+	"wf_approval",
+	"wf_task",
+	"wf_instance",
 }
 
 var (
@@ -200,6 +207,10 @@ func NewDB(t *testing.T) *gorm.DB {
 
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	Reset(t, gdb)
+	// P3 §4.2：与生产一致安装租户插件。未设置租户上下文的用例不受影响（插件只在 context 带租户时过滤）。
+	if _, err := tenant.Register(gdb); err != nil {
+		t.Fatalf("安装租户插件失败: %v", err)
+	}
 	return gdb
 }
 
@@ -211,6 +222,12 @@ func Reset(t *testing.T, gdb *gorm.DB) {
 			t.Fatalf("清理表 %s 失败: %v", table, err)
 		}
 	}
+	// 租户 0 是迁移种子，只删测试创建的租户及其复制出的数据；流程定义只保留租户 0 的种子
+	gdb.Exec("DELETE FROM sys_tenant WHERE id <> 0")
+	gdb.Exec("DELETE FROM wf_definition WHERE tenant_id <> 0")
+	gdb.Exec("DELETE FROM fin_account WHERE tenant_id <> 0")
+	gdb.Exec("DELETE FROM sys_user_role WHERE user_id IN (SELECT id FROM sys_user WHERE tenant_id <> 0)")
+	gdb.Exec("DELETE FROM sys_user WHERE tenant_id <> 0")
 }
 
 // Fixture 聚合一条主链路需要的主数据。

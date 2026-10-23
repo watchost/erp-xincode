@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm"
 
 	apperrors "erp-system/internal/pkg/errors"
+	"erp-system/internal/message"
 	purchaseDto "erp-system/internal/purchase/dto"
 	purchaseService "erp-system/internal/purchase/service"
 	"erp-system/internal/testsupport"
@@ -331,5 +332,36 @@ func TestWorkflow_CountersignConditionAndNoAssignee(t *testing.T) {
 	gdb.Table("wf_instance").Where("biz_type = ? AND biz_no = 'X2'", bizType).Count(&n)
 	if n != 0 {
 		t.Fatal("启动失败应整体回滚，不留实例")
+	}
+}
+
+// P3 §4.4：新建待办（提交、进入下一级、转办）时审批人收到站内信。
+func TestApprovalTodo_SendsInboxMessage(t *testing.T) {
+	gdb, wf, deps, o, orderNo := setup(t, "wfmsg")
+	wf.SetNotifier(message.NewService(gdb))
+	cnt := func(uid int64) int64 {
+		var n int64
+		gdb.Table("msg_message").Where("receiver_id = ? AND category = ? AND biz_no = ?", uid, message.CategoryApprovalTodo, orderNo).Count(&n)
+		return n
+	}
+	if _, err := deps.Service.SubmitOrder(as(o.starter), orderNo); err != nil {
+		t.Fatalf("提交失败: %v", err)
+	}
+	if cnt(o.leader) != 1 || cnt(o.mgr1) != 0 {
+		t.Fatalf("提交后只有部门负责人收到待办消息：leader=%d mgr1=%d", cnt(o.leader), cnt(o.mgr1))
+	}
+	t1 := onlyTodo(t, wf, o.leader, orderNo)
+	if err := wf.Transfer(as(o.leader), t1.TaskID, o.other, "代审"); err != nil {
+		t.Fatal(err)
+	}
+	if cnt(o.other) != 1 {
+		t.Fatal("转办目标应收到待办消息")
+	}
+	tOther := onlyTodo(t, wf, o.other, orderNo)
+	if err := wf.Approve(as(o.other), tOther.TaskID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if cnt(o.mgr1) != 1 || cnt(o.mgr2) != 1 {
+		t.Fatalf("进入第二级后两位管理层都应收到消息：mgr1=%d mgr2=%d", cnt(o.mgr1), cnt(o.mgr2))
 	}
 }

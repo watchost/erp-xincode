@@ -11,6 +11,7 @@ import (
 
 type MdmMaterial struct {
 	ID             int64            `json:"id"`
+	TenantID       int64            `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	MaterialCode   string           `json:"material_code"`
 	Name           string           `json:"name"`
 	Spec           string           `json:"spec"`
@@ -62,6 +63,7 @@ type MdmCustomer struct {
 
 type MdmSupplier struct {
 	ID           int64          `json:"id"`
+	TenantID     int64          `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	SupplierCode string         `json:"supplier_code"`
 	Name         string         `json:"name"`
 	Contact      string         `json:"contact"`
@@ -73,6 +75,7 @@ type MdmSupplier struct {
 
 type MdmWarehouse struct {
 	ID        int64          `json:"id"`
+	TenantID  int64          `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	Code      string         `json:"code"`
 	Name      string         `json:"name"`
 	Type      int            `json:"type"`
@@ -82,6 +85,7 @@ type MdmWarehouse struct {
 
 type MdmLocation struct {
 	ID           int64          `json:"id"`
+	TenantID     int64          `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	WarehouseID  int64          `json:"warehouse_id"`
 	LocationCode string         `json:"location_code"`
 	Zone         string         `json:"zone"`

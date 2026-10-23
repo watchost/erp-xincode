@@ -46,14 +46,47 @@ func (f AuditSinkFunc) WriteAudit(ctx context.Context, entry AuditEntry) {
 	f(ctx, entry)
 }
 
-// 递归打码的敏感键（大小写不敏感）。
+// 递归打码的敏感键（大小写不敏感）。P3 §4.3 补充了密钥、凭证、银行卡类字段。
 var sensitiveKeys = map[string]struct{}{
-	"password":      {},
-	"old_password":  {},
-	"new_password":  {},
-	"token":         {},
-	"refresh_token": {},
-	"captcha_code":  {},
+	"password":       {},
+	"old_password":   {},
+	"new_password":   {},
+	"admin_password": {},
+	"password_hash":  {},
+	"token":          {},
+	"access_token":   {},
+	"refresh_token":  {},
+	"captcha_code":   {},
+	"secret":         {},
+	"client_secret":  {},
+	"api_key":        {},
+	"apikey":         {},
+	"authorization":  {},
+	"private_key":    {},
+	"bank_account":   {},
+	"card_no":        {},
+	"id_card":        {},
+}
+
+// auditSummary 请求体未能完整记录时的摘要：保证任何写操作都留下可追溯记录（路径参数 + 查询串 + 体积）。
+func auditSummary(c *gin.Context, reason string) json.RawMessage {
+	m := map[string]interface{}{
+		"_body":         reason,
+		"_content_type": c.GetHeader("Content-Type"),
+		"_size":         c.Request.ContentLength,
+	}
+	if len(c.Params) > 0 {
+		params := map[string]string{}
+		for _, p := range c.Params {
+			params[p.Key] = p.Value
+		}
+		m["_path_params"] = params
+	}
+	if q := c.Request.URL.RawQuery; q != "" {
+		m["_query"] = q
+	}
+	raw, _ := json.Marshal(maskSensitive(m))
+	return raw
 }
 
 const maskedValue = "******"
@@ -110,6 +143,33 @@ func Audit(sink AuditSink) gin.HandlerFunc {
 		start := time.Now()
 		c.Next()
 		duration := time.Since(start).Milliseconds()
+
+		// 请求体没有被完整记录（非 JSON / 超过 4KB / 空体 / 解析失败）时记摘要，不留空白记录
+		if bodyRaw == nil {
+			switch {
+			case c.Request.ContentLength == 0:
+				bodyRaw = auditSummary(c, "empty")
+			case !strings.Contains(ct, "application/json"):
+				bodyRaw = auditSummary(c, "not_json")
+			case c.Request.ContentLength < 0 || c.Request.ContentLength > maxAuditBody:
+				bodyRaw = auditSummary(c, "too_large_or_chunked")
+			default:
+				bodyRaw = auditSummary(c, "unparsable")
+			}
+		} else if len(c.Params) > 0 {
+			// JSON 体合并路径参数（如 /orders/:order_no/approve），否则无法从审计定位到具体单据
+			var generic map[string]interface{}
+			if json.Unmarshal(bodyRaw, &generic) == nil {
+				params := map[string]string{}
+				for _, p := range c.Params {
+					params[p.Key] = p.Value
+				}
+				generic["_path_params"] = params
+				if merged, err := json.Marshal(generic); err == nil {
+					bodyRaw = merged
+				}
+			}
+		}
 
 		uid := c.GetInt64(CtxUserID)
 		entry := AuditEntry{

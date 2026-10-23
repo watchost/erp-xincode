@@ -8,6 +8,7 @@ import (
 
 type OpenClient struct {
 	ID           int64     `json:"id"`
+	TenantID     int64     `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	ClientID     string    `json:"client_id"`
 	ClientSecret string    `json:"-"`
 	Name         string    `json:"name"`

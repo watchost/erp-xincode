@@ -8,6 +8,7 @@ import (
 
 type LlmSession struct {
 	ID          int64     `json:"id"`
+	TenantID    int64     `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	UserID      int64     `json:"user_id"`
 	Title       string    `json:"title"`
 	ContextMeta []byte    `json:"context_meta"`
@@ -16,6 +17,7 @@ type LlmSession struct {
 
 type LlmMessage struct {
 	ID        int64     `json:"id"`
+	TenantID  int64     `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	SessionID int64     `json:"session_id"`
 	Role      int       `json:"role"`
 	Content   string    `json:"content"`

@@ -46,6 +46,7 @@ type Service struct {
 	db        *gorm.DB
 	mu        sync.RWMutex
 	callbacks map[string]Approvable
+	notifier  TodoNotifier
 	seq       uint64
 }
 
@@ -116,12 +117,12 @@ func (s *Service) CreateDefinition(ctx context.Context, req CreateDefinitionReq)
 	var def WfDefinition
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var maxVer int
-		if err := tx.Model(&WfDefinition{}).Where("code = ?", req.Code).
+		if err := tx.Model(&WfDefinition{}).Where("tenant_id = ? AND code = ?", tenantOf(ctx), req.Code).
 			Select("COALESCE(MAX(version), 0)").Scan(&maxVer).Error; err != nil {
 			return err
 		}
 		def = WfDefinition{
-			Code: req.Code, Name: req.Name, Version: maxVer + 1, Definition: req.Definition,
+			Code: req.Code, Name: req.Name, Version: maxVer + 1, Definition: req.Definition, TenantID: tenantOf(ctx),
 			Status: DefStatusDraft, CreatedBy: auth.UserIDFromContext(ctx),
 			CreatedAt: time.Now(), UpdatedAt: time.Now(),
 		}
@@ -155,7 +156,7 @@ func (s *Service) DeployDefinition(ctx context.Context, id int64) error {
 		if _, err := ParseFlow(def.Definition); err != nil {
 			return err
 		}
-		if err := tx.Model(&WfDefinition{}).Where("code = ? AND status = ? AND id <> ?", def.Code, DefStatusDeployed, id).
+		if err := tx.Model(&WfDefinition{}).Where("tenant_id = ? AND code = ? AND status = ? AND id <> ?", def.TenantID, def.Code, DefStatusDeployed, id).
 			Updates(map[string]any{"status": DefStatusDisabled, "updated_at": time.Now()}).Error; err != nil {
 			return err
 		}
@@ -170,7 +171,7 @@ func (s *Service) HasDeployed(ctx context.Context, tx *gorm.DB, bizType string) 
 		db = tx
 	}
 	var n int64
-	err := db.WithContext(ctx).Model(&WfDefinition{}).Where("code = ? AND status = ?", bizType, DefStatusDeployed).Count(&n).Error
+	err := db.WithContext(ctx).Model(&WfDefinition{}).Where("tenant_id = ? AND code = ? AND status = ?", tenantOf(ctx), bizType, DefStatusDeployed).Count(&n).Error
 	return n > 0, err
 }
 
@@ -193,8 +194,10 @@ func (s *Service) StartTx(ctx context.Context, tx *gorm.DB, bizType, bizNo strin
 	if starter <= 0 {
 		return nil, errors.New(10002, 401, "未登录")
 	}
+	// 显式按租户取定义与建实例：不依赖插件，保证审批人解析/通知都使用发起人所在租户
+	tenantID, _ := auth.TenantFromContext(ctx)
 	var def WfDefinition
-	if err := tx.Where("code = ? AND status = ?", bizType, DefStatusDeployed).First(&def).Error; err != nil {
+	if err := tx.Where("tenant_id = ? AND code = ? AND status = ?", tenantID, bizType, DefStatusDeployed).First(&def).Error; err != nil {
 		if stdErrors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNoDeployedDef
 		}
@@ -205,7 +208,7 @@ func (s *Service) StartTx(ctx context.Context, tx *gorm.DB, bizType, bizNo strin
 		return nil, err
 	}
 	var running int64
-	if err := tx.Model(&WfInstance{}).Where("biz_type = ? AND biz_no = ? AND status = ?", bizType, bizNo, InstRunning).
+	if err := tx.Model(&WfInstance{}).Where("tenant_id = ? AND biz_type = ? AND biz_no = ? AND status = ?", tenantID, bizType, bizNo, InstRunning).
 		Count(&running).Error; err != nil {
 		return nil, err
 	}
@@ -214,7 +217,7 @@ func (s *Service) StartTx(ctx context.Context, tx *gorm.DB, bizType, bizNo strin
 	}
 	varsJSON, _ := json.Marshal(vars)
 	inst := &WfInstance{
-		InstanceNo: s.nextNo(), DefID: def.ID, BizType: bizType, BizNo: bizNo,
+		InstanceNo: s.nextNo(), DefID: def.ID, BizType: bizType, BizNo: bizNo, TenantID: tenantID,
 		Variables: varsJSON, Status: InstRunning, StarterID: starter, CreatedAt: time.Now(),
 	}
 	if err := tx.Create(inst).Error; err != nil {
@@ -256,7 +259,7 @@ func (s *Service) advance(ctx context.Context, tx *gorm.DB, inst *WfInstance, fl
 		if n.Type != "approval" || !conditionMatch(n.Condition, vars) {
 			continue
 		}
-		assignees, err := s.resolveAssignees(tx, n.Assignee, inst.StarterID)
+		assignees, err := s.resolveAssignees(tx, inst.TenantID, n.Assignee, inst.StarterID)
 		if err != nil {
 			return err
 		}
@@ -272,10 +275,28 @@ func (s *Service) advance(ctx context.Context, tx *gorm.DB, inst *WfInstance, fl
 				return err
 			}
 		}
+		if err := s.notifyTodo(ctx, tx, inst, assignees, n.Name); err != nil {
+			return err
+		}
 		inst.CurrentNode = n.Code
 		return tx.Model(inst).Update("current_node", n.Code).Error
 	}
 	return ErrInvalidDef
+}
+
+// TodoNotifier 新建待办时的通知（P3 §4.4，由 message 包实现，避免 workflow 依赖 message）。
+// 在审批事务内调用：流程回滚时消息一并回滚。
+type TodoNotifier interface {
+	ApprovalTodoTx(ctx context.Context, tx *gorm.DB, tenantID int64, assignees []int64, bizType, bizNo, nodeName, instanceNo string) error
+}
+
+func (s *Service) SetNotifier(n TodoNotifier) { s.notifier = n }
+
+func (s *Service) notifyTodo(ctx context.Context, tx *gorm.DB, inst *WfInstance, assignees []int64, nodeName string) error {
+	if s.notifier == nil || len(assignees) == 0 {
+		return nil
+	}
+	return s.notifier.ApprovalTodoTx(ctx, tx, inst.TenantID, assignees, inst.BizType, inst.BizNo, nodeName, inst.InstanceNo)
 }
 
 func conditionMatch(c *Condition, vars map[string]decimal.Decimal) bool {
@@ -304,8 +325,9 @@ func conditionMatch(c *Condition, vars map[string]decimal.Decimal) bool {
 	return true
 }
 
-// resolveAssignees 解析审批人；只返回存在、启用、未删除的用户。找不到任何人时返回 ErrNoAssignee（不静默跳过）。
-func (s *Service) resolveAssignees(tx *gorm.DB, rule *AssigneeRule, starterID int64) ([]int64, error) {
+// resolveAssignees 解析审批人；只返回本租户内存在、启用、未删除的用户。找不到任何人时返回 ErrNoAssignee（不静默跳过）。
+// sys_user_role / sys_role 是全局表（没有 tenant_id），所以最终统一经 filterActive 按 sys_user.tenant_id 限定。
+func (s *Service) resolveAssignees(tx *gorm.DB, tenantID int64, rule *AssigneeRule, starterID int64) ([]int64, error) {
 	var ids []int64
 	switch rule.Type {
 	case "user":
@@ -334,7 +356,7 @@ func (s *Service) resolveAssignees(tx *gorm.DB, rule *AssigneeRule, starterID in
 			ids = []int64{leader}
 		}
 	}
-	active, err := s.filterActive(tx, ids)
+	active, err := s.filterActive(tx, tenantID, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -378,13 +400,13 @@ func (s *Service) findLeader(tx *gorm.DB, starterID int64, up bool) (int64, erro
 	return 0, nil
 }
 
-func (s *Service) filterActive(tx *gorm.DB, ids []int64) ([]int64, error) {
+func (s *Service) filterActive(tx *gorm.DB, tenantID int64, ids []int64) ([]int64, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
 	var out []int64
 	err := tx.Table("sys_user").Select("id").
-		Where("id IN ? AND status = 1 AND deleted_at IS NULL", ids).Order("id").Scan(&out).Error
+		Where("id IN ? AND tenant_id = ? AND status = 1 AND deleted_at IS NULL", ids, tenantID).Order("id").Scan(&out).Error
 	return out, err
 }
 
@@ -493,7 +515,7 @@ func (s *Service) Transfer(ctx context.Context, taskID, target int64, comment st
 		if err != nil {
 			return err
 		}
-		if err := s.checkTarget(tx, inst.ID, t.NodeCode, target); err != nil {
+		if err := s.checkTarget(tx, inst, t.NodeCode, target); err != nil {
 			return err
 		}
 		if err := s.finishTask(tx, t, TaskTransferred); err != nil {
@@ -503,6 +525,9 @@ func (s *Service) Transfer(ctx context.Context, taskID, target int64, comment st
 			InstanceID: inst.ID, NodeCode: t.NodeCode, NodeName: t.NodeName, SignMode: t.SignMode,
 			AssigneeID: target, Status: TaskTodo, SourceTaskID: &t.ID, CreatedAt: time.Now(),
 		}).Error; err != nil {
+			return err
+		}
+		if err := s.notifyTodo(ctx, tx, inst, []int64{target}, t.NodeName); err != nil {
 			return err
 		}
 		return s.record(tx, inst.ID, &t.ID, t.NodeCode, op, ActionTransfer, comment, &target)
@@ -518,7 +543,7 @@ func (s *Service) AddSign(ctx context.Context, taskID, target int64, comment str
 		if err != nil {
 			return err
 		}
-		if err := s.checkTarget(tx, inst.ID, t.NodeCode, target); err != nil {
+		if err := s.checkTarget(tx, inst, t.NodeCode, target); err != nil {
 			return err
 		}
 		if err := tx.Model(&WfTask{}).Where("instance_id = ? AND node_code = ? AND status = ?", inst.ID, t.NodeCode, TaskTodo).
@@ -531,13 +556,16 @@ func (s *Service) AddSign(ctx context.Context, taskID, target int64, comment str
 		}).Error; err != nil {
 			return err
 		}
+		if err := s.notifyTodo(ctx, tx, inst, []int64{target}, t.NodeName); err != nil {
+			return err
+		}
 		return s.record(tx, inst.ID, &t.ID, t.NodeCode, op, ActionAddSign, comment, &target)
 	})
 }
 
-// checkTarget 目标用户必须存在且启用，且在本节点没有待办（避免重复）；不能转给/加签给自己的同一待办。
-func (s *Service) checkTarget(tx *gorm.DB, instID int64, node string, target int64) error {
-	active, err := s.filterActive(tx, []int64{target})
+// checkTarget 目标用户必须是本租户内存在且启用的用户，且在本节点没有待办（避免重复）。
+func (s *Service) checkTarget(tx *gorm.DB, inst *WfInstance, node string, target int64) error {
+	active, err := s.filterActive(tx, inst.TenantID, []int64{target})
 	if err != nil {
 		return err
 	}
@@ -545,7 +573,7 @@ func (s *Service) checkTarget(tx *gorm.DB, instID int64, node string, target int
 		return ErrInvalidTarget
 	}
 	var dup int64
-	if err := tx.Model(&WfTask{}).Where("instance_id = ? AND node_code = ? AND assignee_id = ? AND status = ?", instID, node, target, TaskTodo).
+	if err := tx.Model(&WfTask{}).Where("instance_id = ? AND node_code = ? AND assignee_id = ? AND status = ?", inst.ID, node, target, TaskTodo).
 		Count(&dup).Error; err != nil {
 		return err
 	}
@@ -580,7 +608,7 @@ func (s *Service) Cancel(ctx context.Context, instanceNo, comment string) error 
 func (s *Service) CancelByBizTx(ctx context.Context, tx *gorm.DB, bizType, bizNo string) error {
 	var inst WfInstance
 	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("biz_type = ? AND biz_no = ? AND status = ?", bizType, bizNo, InstRunning).First(&inst).Error
+		Where("tenant_id = ? AND biz_type = ? AND biz_no = ? AND status = ?", tenantOf(ctx), bizType, bizNo, InstRunning).First(&inst).Error
 	if stdErrors.Is(err, gorm.ErrRecordNotFound) {
 		return nil
 	}
@@ -730,4 +758,10 @@ func (g BizGateway) StartTx(ctx context.Context, tx *gorm.DB, bizType, bizNo str
 
 func (g BizGateway) CancelByBizTx(ctx context.Context, tx *gorm.DB, bizType, bizNo string) error {
 	return g.S.CancelByBizTx(ctx, tx, bizType, bizNo)
+}
+
+// tenantOf 当前上下文租户（没有租户上下文时为 0，即默认租户）。
+func tenantOf(ctx context.Context) int64 {
+	tid, _ := auth.TenantFromContext(ctx)
+	return tid
 }

@@ -70,6 +70,7 @@ type WfInstance struct {
 
 type WfTask struct {
 	ID           int64      `json:"id"`
+	TenantID     int64      `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	InstanceID   int64      `json:"instance_id"`
 	NodeCode     string     `json:"node_code"`
 	NodeName     string     `json:"node_name"`
@@ -83,6 +84,7 @@ type WfTask struct {
 
 type WfApproval struct {
 	ID         int64     `json:"id"`
+	TenantID   int64     `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	InstanceID int64     `json:"instance_id"`
 	TaskID     *int64    `json:"task_id"`
 	NodeCode   string    `json:"node_code"`

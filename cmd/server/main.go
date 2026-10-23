@@ -27,6 +27,8 @@ import (
 	migratetool "erp-system/internal/pkg/migrate"
 	"erp-system/internal/pkg/printer"
 	"erp-system/internal/workflow"
+	"erp-system/internal/message"
+	"erp-system/internal/pkg/tenant"
 	"erp-system/internal/pkg/redis"
 	"erp-system/internal/routes"
 
@@ -113,6 +115,12 @@ func main() {
 		}
 		log.Println("database migrations applied (MIGRATE_AUTO=true)")
 	}
+
+	// P3 §4.2：租户插件（必须在迁移之后安装，启动时读取含 tenant_id 列的表）
+	if _, err := tenant.Register(dbConn); err != nil {
+		log.Fatalf("tenant plugin init failed: %v", err)
+	}
+	tenantSvc := tenant.NewService(dbConn)
 
 	rdb := redis.Init()
 	txManager := db.NewTxManager(dbConn)
@@ -226,6 +234,15 @@ func main() {
 	purchaseSvc.SetWorkflow(workflow.BizGateway{S: workflowSvc})
 	workflowH := workflow.NewHandler(workflowSvc)
 
+	// P3 §4.4 站内消息：审批待办 + 低于安全库存
+	messageSvc := message.NewService(dbConn)
+	workflowSvc.SetNotifier(messageSvc)
+	warehouseSvc.SetStockAlerter(messageSvc)
+	messageH := message.NewHandler(messageSvc)
+
+	// P3 §4.2：停用/过期租户禁止登录
+	iamSvc.SetTenantChecker(tenantSvc.Check)
+
 	// 销售模块（P2 §3.1）：订单/出库/退货，与采购对称。
 	salesOrderRepo := salesRepository.NewSalesOrderRepository(dbConn)
 	salesOutboundRepo := salesRepository.NewSalesOutboundRepository(dbConn)
@@ -292,6 +309,8 @@ func main() {
 	openapiWorker := openapiWorkerPkg.NewWorker(openapiDeliveryRepo, openapiWebhookRepo)
 	workerCtx, workerStop := context.WithCancel(context.Background())
 	go openapiWorker.Run(workerCtx)
+	// P3 §4.4：外部渠道消息派发（事务提交后由后台派发；未配置渠道记为 skipped）
+	go messageSvc.RunDispatcher(workerCtx, 10*time.Second)
 
 	// 路由注册
 	mode := viper.GetString("server.mode")
@@ -384,6 +403,9 @@ func main() {
 		OpenAPI:      openapiH,
 		Printer:      printer.NewPrinterHandler(),
 		Workflow:     workflowH,
+		Message:      messageH,
+		Tenant:       tenant.NewHandler(tenantSvc),
+		TenantGuard:  tenant.Guard(tenantSvc),
 		OpenAPIAuth:  openapiMiddleware.BearerAuth(openapiSvc.ValidateAccessToken),
 	})
 

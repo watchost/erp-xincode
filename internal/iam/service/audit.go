@@ -5,6 +5,8 @@ package service
 import (
 	"context"
 	"encoding/json"
+
+	"erp-system/internal/pkg/auth"
 	"time"
 
 	"erp-system/internal/iam/dto"
@@ -74,7 +76,14 @@ func (s *IAMService) ListAuditLogs(ctx context.Context, req dto.AuditLogListReq)
 	if start != nil && end != nil && end.Before(*start) {
 		return nil, 0, errors.New(10005, 400, "结束时间不能早于开始时间")
 	}
+	// P3 §4.2：审计查询只返回当前租户的记录（显式条件，不依赖插件；没有租户上下文时不过滤）
+	var tenantFilter *int64
+	if tid, ok := auth.TenantFromContext(ctx); ok {
+		tenantFilter = &tid
+	}
 	logs, total, err := s.auditRepo.ListPage(repository.AuditQuery{
+		TenantID:  tenantFilter,
+		TraceID:   req.TraceID,
 		UserID:    req.UserID,
 		Module:    req.Module,
 		Action:    req.Action,

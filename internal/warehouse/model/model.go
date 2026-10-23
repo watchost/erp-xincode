@@ -10,6 +10,7 @@ import (
 
 type InvInventory struct {
 	ID           int64           `json:"id"`
+	TenantID     int64           `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	MaterialID   int64           `json:"material_id"`
 	WarehouseID  int64           `json:"warehouse_id"`
 	LocationID   int64           `json:"location_id"`
@@ -21,6 +22,7 @@ type InvInventory struct {
 
 type InvStockLedger struct {
 	ID          int64           `json:"id"`
+	TenantID    int64           `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	MaterialID  int64           `json:"material_id"`
 	WarehouseID int64           `json:"warehouse_id"`
 	BizType     int             `json:"biz_type"`
@@ -72,15 +74,16 @@ type InvStockCheck struct {
 }
 
 type InvStockCheckItem struct {
-	ID          int64           `json:"id"`
-	CheckID     int64           `json:"check_id"`
-	MaterialID  int64           `json:"material_id"`
-	LocationID  *int64          `json:"location_id"`
-	BookQty     decimal.Decimal `json:"book_qty"`
-	ActualQty   decimal.Decimal `json:"actual_qty"`
-	DiffQty     decimal.Decimal `json:"diff_qty"`
-	UnitCost    decimal.Decimal `json:"unit_cost"`
-	DiffAmount  decimal.Decimal `json:"diff_amount"`
+	ID         int64           `json:"id"`
+	TenantID   int64           `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
+	CheckID    int64           `json:"check_id"`
+	MaterialID int64           `json:"material_id"`
+	LocationID *int64          `json:"location_id"`
+	BookQty    decimal.Decimal `json:"book_qty"`
+	ActualQty  decimal.Decimal `json:"actual_qty"`
+	DiffQty    decimal.Decimal `json:"diff_qty"`
+	UnitCost   decimal.Decimal `json:"unit_cost"`
+	DiffAmount decimal.Decimal `json:"diff_amount"`
 }
 
 type InvTransfer struct {
@@ -103,6 +106,7 @@ type InvTransfer struct {
 
 type InvTransferItem struct {
 	ID             int64           `json:"id"`
+	TenantID       int64           `json:"tenant_id"` // P3 §4.2 由租户插件在创建时写入
 	TransferID     int64           `json:"transfer_id"`
 	MaterialID     int64           `json:"material_id"`
 	Qty            decimal.Decimal `json:"qty"`
@@ -161,5 +165,3 @@ type InvSerial struct {
 
 func (InvBatch) TableName() string  { return "inv_batch" }
 func (InvSerial) TableName() string { return "inv_serial" }
-
-
