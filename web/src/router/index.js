@@ -114,6 +114,30 @@ const routes = [
         name: 'IamRoles',
         component: () => import('@/views/iam/roles.vue'),
         meta: { title: '角色管理', icon: 'UserFilled', permission: 'iam:role' }
+      },
+      {
+        path: 'workflow/todo',
+        name: 'WorkflowTodo',
+        component: () => import('@/views/workflow/todo.vue'),
+        meta: { title: '我的审批', permission: 'workflow:task' }
+      },
+      {
+        path: 'workflow/instances/:no',
+        name: 'WorkflowInstance',
+        component: () => import('@/views/workflow/instance.vue'),
+        meta: { title: '审批详情', permission: 'workflow:task' }
+      },
+      {
+        path: 'workflow/definitions',
+        name: 'WorkflowDefinitions',
+        component: () => import('@/views/workflow/definitions.vue'),
+        meta: { title: '流程定义', permission: 'workflow:definition' }
+      },
+      {
+        path: 'messages',
+        name: 'Messages',
+        component: () => import('@/views/messages/index.vue'),
+        meta: { title: '消息中心', permission: 'message:view' }
       }
     ]
   },
@@ -156,6 +180,25 @@ const routes = [
         name: 'PdaOfflineQueue',
         component: () => import('@/views/pda/offline-queue.vue'),
         meta: { title: '离线同步队列' }
+      },
+      // 移动端查看审批和消息：复用桌面页面组件，页面内按窄屏切换为卡片布局
+      {
+        path: 'workflow/todo',
+        name: 'PdaWorkflowTodo',
+        component: () => import('@/views/workflow/todo.vue'),
+        meta: { title: '我的审批', permission: 'workflow:task' }
+      },
+      {
+        path: 'workflow/instances/:no',
+        name: 'PdaWorkflowInstance',
+        component: () => import('@/views/workflow/instance.vue'),
+        meta: { title: '审批详情', permission: 'workflow:task' }
+      },
+      {
+        path: 'messages',
+        name: 'PdaMessages',
+        component: () => import('@/views/messages/index.vue'),
+        meta: { title: '消息', permission: 'message:view' }
       }
     ]
   }

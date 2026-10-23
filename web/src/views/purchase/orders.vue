@@ -28,6 +28,7 @@
           <el-form-item label="状态">
             <el-select v-model="searchForm.status" placeholder="请选择" clearable style="width: 120px">
               <el-option label="草稿" :value="10" />
+              <el-option label="审批中" :value="15" />
               <el-option label="已审批" :value="20" />
               <el-option label="部分收货" :value="30" />
               <el-option label="已完成" :value="40" />
@@ -49,21 +50,48 @@
             ¥{{ row.total_amount }}
           </template>
         </el-table-column>
-        <el-table-column prop="status_desc" label="状态" width="100" />
+        <el-table-column prop="status_desc" label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag v-if="row.status === 15" type="warning" size="small">{{ row.status_desc || '审批中' }}</el-tag>
+            <span v-else>{{ row.status_desc }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="plan_arrive_at" label="预计到货" width="160" />
         <el-table-column prop="created_at" label="创建时间" width="180" />
-        <el-table-column label="操作" width="180" fixed="right">
+        <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
             <el-button type="primary" link size="small" @click="viewDetail(row)">查看</el-button>
+            <!-- 采购订单走审批流：草稿提交审批，不再调用直接审批接口 -->
             <el-button
               v-if="row.status === 10"
-              v-permission="'purchase:order:approve'"
+              v-permission="'purchase:order:submit'"
               type="success"
               link
               size="small"
-              @click="handleApprove(row)"
+              :loading="submittingNo === row.order_no"
+              @click="handleSubmit(row)"
             >
-              审批
+              提交审批
+            </el-button>
+            <el-button
+              v-if="row.status !== 10"
+              v-permission="'workflow:task'"
+              type="primary"
+              link
+              size="small"
+              @click="viewApproval(row)"
+            >
+              审批进度
+            </el-button>
+            <el-button
+              v-if="row.status === 10 || row.status === 15"
+              v-permission="'purchase:order:cancel'"
+              type="danger"
+              link
+              size="small"
+              @click="handleCancel(row)"
+            >
+              取消
             </el-button>
           </template>
         </el-table-column>
@@ -153,9 +181,17 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
-import { listPurchaseOrders, createPurchaseOrder, approvePurchaseOrder } from '@/api/purchase'
+import { useRoute, useRouter } from 'vue-router'
+import { listPurchaseOrders, createPurchaseOrder, submitPurchaseOrder, cancelPurchaseOrder } from '@/api/purchase'
+import { getInstanceByBiz } from '@/api/workflow'
+import { workflowErrorText } from '@/utils/workflow'
 import { listSuppliers, listMaterials } from '@/api/mdm'
 import { ElMessage, ElMessageBox } from 'element-plus'
+
+const BIZ_PURCHASE_ORDER = 'purchase_order'
+const route = useRoute()
+const router = useRouter()
+const submittingNo = ref('')
 
 const loading = ref(false)
 const tableData = ref([])
@@ -167,7 +203,8 @@ const pageSize = ref(20)
 const showCreateDialog = ref(false)
 
 const searchForm = reactive({
-  order_no: '',
+  // 从审批详情跳转过来时按单号预筛
+  order_no: route.query.order_no ? String(route.query.order_no) : '',
   supplier_id: null,
   status: null
 })
@@ -273,22 +310,62 @@ async function handleCreate() {
   }
 }
 
-async function handleApprove(row) {
-  ElMessageBox.confirm('确定审批该订单吗？', '提示', {
-    confirmButtonText: '确定',
-    cancelButtonText: '取消',
-    type: 'warning'
-  }).then(async () => {
-    try {
-      const res = await approvePurchaseOrder(row.order_no)
-      if (res.code === 0) {
-        ElMessage.success('审批成功')
-        loadData()
-      }
-    } catch (e) {
-      // 失败时拦截器已提示错误，不刷新列表
+async function handleSubmit(row) {
+  try {
+    await ElMessageBox.confirm(
+      `提交后订单 ${row.order_no} 进入审批，审批期间不能修改；被驳回或撤销会退回草稿。`,
+      '提交审批',
+      { confirmButtonText: '提交', cancelButtonText: '取消', type: 'info' }
+    )
+  } catch (e) {
+    return
+  }
+  submittingNo.value = row.order_no
+  try {
+    const res = await submitPurchaseOrder(row.order_no)
+    const no = res.data?.instance_no
+    ElMessage.success(no ? `已提交审批，流程号 ${no}` : '已提交审批')
+    loadData()
+  } catch (err) {
+    // submitPurchaseOrder 不弹全局提示，这里按错误码给出可操作的说明
+    ElMessageBox.alert(workflowErrorText(err), '提交审批失败', { type: 'error', confirmButtonText: '知道了' }).catch(() => {})
+  } finally {
+    submittingNo.value = ''
+  }
+}
+
+async function viewApproval(row) {
+  try {
+    const res = await getInstanceByBiz(BIZ_PURCHASE_ORDER, row.order_no)
+    const no = res.data?.instance_no
+    if (!no) {
+      ElMessage.info('该订单没有审批记录（可能是启用审批流之前审批的）')
+      return
     }
-  }).catch(() => {})
+    router.push(`/workflow/instances/${encodeURIComponent(no)}`)
+  } catch (e) {
+    // 拦截器已提示
+  }
+}
+
+async function handleCancel(row) {
+  const tip = row.status === 15 ? '订单正在审批中，取消会同时撤销审批流程。' : ''
+  try {
+    await ElMessageBox.confirm(`${tip}确定取消订单 ${row.order_no} 吗？`, '取消订单', {
+      confirmButtonText: '确定取消',
+      cancelButtonText: '返回',
+      type: 'warning'
+    })
+  } catch (e) {
+    return
+  }
+  try {
+    await cancelPurchaseOrder(row.order_no)
+    ElMessage.success('订单已取消')
+    loadData()
+  } catch (e) {
+    // 拦截器已提示
+  }
 }
 
 function viewDetail(row) {

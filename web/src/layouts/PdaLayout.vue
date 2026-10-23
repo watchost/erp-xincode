@@ -48,6 +48,9 @@
           </el-badge>
         </div>
 
+        <!-- 站内信通知铃铛 -->
+        <NotificationBell v-if="canViewMessages" dark :size="20" />
+
         <!-- 用户与退出菜单 -->
         <el-dropdown trigger="click" @command="handleUserCommand">
           <div class="user-avatar-btn">
@@ -57,6 +60,14 @@
             <el-dropdown-menu>
               <el-dropdown-item disabled>
                 <strong>{{ userInfo?.real_name || '作业员' }}</strong>
+              </el-dropdown-item>
+              <el-dropdown-item v-if="canViewWorkflow" command="workflow" divided>
+                <el-icon><Stamp /></el-icon>
+                <span>我的审批</span>
+              </el-dropdown-item>
+              <el-dropdown-item v-if="canViewMessages" command="messages">
+                <el-icon><Bell /></el-icon>
+                <span>消息</span>
               </el-dropdown-item>
               <el-dropdown-item command="desktop" divided>
                 <el-icon><Monitor /></el-icon>
@@ -113,11 +124,16 @@ import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/store/user'
 import { isOnline, canInstallPwa, promptInstallPwa } from '@/utils/pwa'
 import { pendingCount } from '@/utils/pdaOffline'
+import { hasPerm } from '@/utils/permission'
+import NotificationBell from '@/components/NotificationBell.vue'
 import { ElMessageBox, ElMessage } from 'element-plus'
 
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
+
+const canViewMessages = computed(() => hasPerm(userStore.permissions, 'message:view'))
+const canViewWorkflow = computed(() => hasPerm(userStore.permissions, 'workflow:task'))
 
 const userInfo = computed(() => userStore.userInfo || {})
 const showBackButton = computed(() => route.path !== '/pda')
@@ -143,6 +159,10 @@ function handleUserCommand(cmd) {
     router.push('/dashboard')
   } else if (cmd === 'queue') {
     router.push('/pda/offline-queue')
+  } else if (cmd === 'workflow') {
+    router.push('/pda/workflow/todo')
+  } else if (cmd === 'messages') {
+    router.push('/pda/messages')
   } else if (cmd === 'logout') {
     ElMessageBox.confirm('确定要退出当前作业端吗？', '提示', {
       confirmButtonText: '确定',

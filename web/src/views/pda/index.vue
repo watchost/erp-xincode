@@ -86,6 +86,22 @@
         <div class="card-desc">{{ pendingCount > 0 ? `${pendingCount}条待同步` : '无挂起数据' }}</div>
       </div>
 
+      <div v-if="canViewWorkflow" class="grid-card approval-card" @click="router.push('/pda/workflow/todo')">
+        <div class="card-icon-wrap approval">
+          <el-icon :size="32"><Stamp /></el-icon>
+        </div>
+        <div class="card-title">我的审批</div>
+        <div class="card-desc">待办 / 已办 / 审批历史</div>
+      </div>
+
+      <div v-if="canViewMessages" class="grid-card message-card" @click="router.push('/pda/messages')">
+        <div class="card-icon-wrap message">
+          <el-icon :size="32"><ChatDotRound /></el-icon>
+        </div>
+        <div class="card-title">消息</div>
+        <div class="card-desc">审批待办、库存预警</div>
+      </div>
+
       <div class="grid-card sound-card" @click="testSoundFeedback">
         <div class="card-icon-wrap sound">
           <el-icon :size="32"><BellFilled /></el-icon>
@@ -126,6 +142,7 @@ import { useRouter } from 'vue-router'
 import { useUserStore } from '@/store/user'
 import { isOnline, canInstallPwa, promptInstallPwa, showIosInstallGuide } from '@/utils/pwa'
 import { pendingCount } from '@/utils/pdaOffline'
+import { hasPerm } from '@/utils/permission'
 import { playSuccessSound } from '@/utils/sound'
 import BarcodeScanner from '@/components/pda/BarcodeScanner.vue'
 import { ElMessage } from 'element-plus'
@@ -134,6 +151,8 @@ const router = useRouter()
 const userStore = useUserStore()
 
 const userInfo = computed(() => userStore.userInfo || {})
+const canViewWorkflow = computed(() => hasPerm(userStore.permissions, 'workflow:task'))
+const canViewMessages = computed(() => hasPerm(userStore.permissions, 'message:view'))
 
 function handleGlobalScan(code) {
   ElMessage.success(`识别到条码：${code}`)
@@ -357,6 +376,16 @@ async function handleInstallPwa() {
       &.sound {
         background: #e6fffb;
         color: #13c2c2;
+      }
+
+      &.approval {
+        background: #fff7e6;
+        color: #fa8c16;
+      }
+
+      &.message {
+        background: #e6f4ff;
+        color: #1677ff;
       }
     }
 

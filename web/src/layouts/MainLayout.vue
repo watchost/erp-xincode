@@ -1,7 +1,8 @@
 <!-- Copyright 2026 zhouhouping. All Rights Reserved. -->
 <template>
   <el-container class="main-layout">
-    <el-aside width="240px" class="sidebar">
+    <!-- 桌面端固定侧栏；窄屏改为抽屉 -->
+    <el-aside v-if="!isMobile" width="240px" class="sidebar">
       <div class="logo">
         <h2>ERP管理系统</h2>
         <p class="copyright">© 2026 zhouhouping</p>
@@ -25,13 +26,48 @@
       </el-menu>
     </el-aside>
 
-    <el-container>
-      <el-header class="header">
+    <el-drawer
+      v-else
+      v-model="drawerOpen"
+      direction="ltr"
+      size="240px"
+      :with-header="false"
+      class="sidebar-drawer"
+    >
+      <div class="sidebar">
+        <div class="logo">
+          <h2>ERP管理系统</h2>
+          <p class="copyright">© 2026 zhouhouping</p>
+        </div>
+        <el-menu
+          :default-active="activeMenu"
+          router
+          background-color="#001529"
+          text-color="#fff"
+          active-text-color="#409EFF"
+          @select="drawerOpen = false"
+        >
+          <el-sub-menu v-for="group in visibleMenus" :key="group.index" :index="group.index">
+            <template #title>
+              <el-icon><component :is="group.icon" /></el-icon>
+              <span>{{ group.title }}</span>
+            </template>
+            <el-menu-item v-for="item in group.items" :key="item.index" :index="item.index">
+              {{ item.label }}
+            </el-menu-item>
+          </el-sub-menu>
+        </el-menu>
+      </div>
+    </el-drawer>
+
+    <el-container class="main-right">
+      <el-header class="header" :class="{ mobile: isMobile }">
         <div class="header-left">
-          <el-icon class="collapse-btn"><Menu /></el-icon>
+          <el-icon class="collapse-btn" @click="drawerOpen = true"><Menu /></el-icon>
         </div>
         <div class="header-right">
           <el-button
+            v-if="!isMobile"
             type="primary"
             round
             size="small"
@@ -42,14 +78,17 @@
             <span>PDA作业端</span>
           </el-button>
 
+          <NotificationBell v-if="canViewMessages" />
+
           <el-dropdown @command="handleCommand">
             <span class="user-info">
               <el-icon><Avatar /></el-icon>
-              {{ userInfo?.real_name || '管理员' }}
+              <span class="user-name">{{ userInfo?.real_name || '管理员' }}</span>
             </span>
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item command="profile">个人中心</el-dropdown-item>
+                <el-dropdown-item v-if="isMobile" command="pda">PDA作业端</el-dropdown-item>
                 <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
               </el-dropdown-menu>
             </template>
@@ -57,7 +96,7 @@
         </div>
       </el-header>
 
-      <el-main class="main-content">
+      <el-main class="main-content" :class="{ mobile: isMobile }">
         <router-view />
       </el-main>
     </el-container>
@@ -65,18 +104,23 @@
 </template>
 
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/store/user'
 import { ElMessageBox } from 'element-plus'
 import { hasPerm } from '@/utils/permission'
+import { useIsMobile } from '@/composables/useLayout'
+import NotificationBell from '@/components/NotificationBell.vue'
 
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
+const isMobile = useIsMobile()
+const drawerOpen = ref(false)
 
 const activeMenu = computed(() => route.path)
 const userInfo = computed(() => userStore.userInfo || {})
+const canViewMessages = computed(() => hasPerm(userStore.permissions, 'message:view'))
 
 // 菜单定义：perm 为进入该菜单所需权限码（与后端 sys_permission 种子一致）。
 const menus = [
@@ -127,6 +171,14 @@ const menus = [
     items: [{ index: '/device/list', label: '设备列表', perm: 'device:manage' }]
   },
   {
+    index: 'workflow', icon: 'Stamp', title: '审批中心',
+    items: [
+      { index: '/workflow/todo', label: '我的审批', perm: 'workflow:task' },
+      { index: '/messages', label: '消息中心', perm: 'message:view' },
+      { index: '/workflow/definitions', label: '流程定义', perm: 'workflow:definition' }
+    ]
+  },
+  {
     index: 'iam', icon: 'User', title: '系统管理',
     items: [
       { index: '/iam/users', label: '用户管理', perm: 'iam:user' },
@@ -151,6 +203,10 @@ onMounted(() => {
 })
 
 function handleCommand(cmd) {
+  if (cmd === 'pda') {
+    router.push('/pda')
+    return
+  }
   if (cmd === 'logout') {
     ElMessageBox.confirm('确定要退出登录吗？', '提示', {
       confirmButtonText: '确定',
@@ -241,5 +297,40 @@ function handleCommand(cmd) {
   background-color: #f0f2f5;
   padding: 20px;
   overflow-y: auto;
+
+  &.mobile {
+    padding: 10px;
+  }
+}
+
+.main-right {
+  min-width: 0;
+}
+
+.header.mobile {
+  padding: 0 12px;
+
+  .header-right {
+    gap: 10px;
+  }
+
+  .user-name {
+    max-width: 72px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.sidebar-drawer .sidebar {
+  min-height: 100%;
+}
+</style>
+
+<style lang="scss">
+/* el-drawer 会被挂到 body 下，scoped 样式作用不到，单独写全局样式 */
+.sidebar-drawer .el-drawer__body {
+  padding: 0;
+  background-color: #001529;
 }
 </style>
