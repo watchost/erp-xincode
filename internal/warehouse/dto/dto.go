@@ -108,7 +108,59 @@ type MoveInput struct {
 // CostAmount 为本次移动结转的成本金额：入库=本次入库单价×数量，出库=移动加权平均单价×数量。
 // 供财务过账在同一事务内取数，避免重复计算与口径不一致。
 type MoveResult struct {
+	LedgerID   int64
+	BizNo      string
 	AfterQty   decimal.Decimal
 	AvgCost    decimal.Decimal
 	CostAmount decimal.Decimal
 }
+
+// 盘点相关 DTO
+type CreateStockCheckReq struct {
+	WarehouseID int64  `json:"warehouse_id" binding:"required"`
+	LocationID  *int64 `json:"location_id"`
+	Remark      string `json:"remark"`
+}
+
+type EntryStockCheckItemReq struct {
+	MaterialID int64           `json:"material_id" binding:"required"`
+	LocationID *int64          `json:"location_id"`
+	ActualQty  decimal.Decimal `json:"actual_qty" binding:"decgte=0"`
+}
+
+type EntryStockCheckReq struct {
+	Items []EntryStockCheckItemReq `json:"items" binding:"required,dive"`
+}
+
+type StockCheckQuery struct {
+	WarehouseID int64  `form:"warehouse_id"`
+	Status      int16  `form:"status"`
+	CheckNo     string `form:"check_no"`
+	Page        int    `form:"page" binding:"required,min=1"`
+	PageSize    int    `form:"page_size" binding:"required,min=1,max=100"`
+}
+
+// 调拨相关 DTO
+type CreateTransferItemReq struct {
+	MaterialID     int64           `json:"material_id" binding:"required"`
+	Qty            decimal.Decimal `json:"qty" binding:"decgt=0"`
+	FromLocationID *int64          `json:"from_location_id"`
+	ToLocationID   *int64          `json:"to_location_id"`
+}
+
+type CreateTransferReq struct {
+	FromWarehouseID int64                   `json:"from_warehouse_id" binding:"required"`
+	ToWarehouseID   int64                   `json:"to_warehouse_id" binding:"required"`
+	Remark          string                  `json:"remark"`
+	Items           []CreateTransferItemReq `json:"items" binding:"required,min=1,dive"`
+}
+
+type TransferQuery struct {
+	FromWarehouseID int64  `form:"from_warehouse_id"`
+	ToWarehouseID   int64  `form:"to_warehouse_id"`
+	Status          int16  `form:"status"`
+	TransferNo      string `form:"transfer_no"`
+	Page            int    `form:"page" binding:"required,min=1"`
+	PageSize        int    `form:"page_size" binding:"required,min=1,max=100"`
+}
+

@@ -157,11 +157,15 @@ func main() {
 	// 在各自事务内调用 warehouseService 的同事务库存方法。
 	warehouseInvRepo := warehouseRepository.NewInventoryRepository(dbConn)
 	warehouseLedgerRepo := warehouseRepository.NewStockLedgerRepository(dbConn)
+	warehouseCheckRepo := warehouseRepository.NewStockCheckRepository(dbConn)
+	warehouseTransferRepo := warehouseRepository.NewTransferRepository(dbConn)
 	warehouseSvc := warehouseService.NewWarehouseService(
 		txManager, warehouseInvRepo, warehouseLedgerRepo,
 		mdmMaterialRepo, mdmWarehouseRepo, mdmLocationRepo,
 		numberGen, idempGuard,
 	)
+	warehouseSvc.SetStockCheckRepository(warehouseCheckRepo)
+	warehouseSvc.SetTransferRepository(warehouseTransferRepo)
 	warehouseH := warehouseHandler.NewWarehouseHandler(warehouseSvc)
 
 	// 财务模块：采购入库/生产领退料需在同事务内过账，故先于采购/生产构建，
@@ -176,6 +180,7 @@ func main() {
 		mdmMaterialRepo, numberGen,
 	)
 	financeH := financeHandler.NewFinanceHandler(financeSvc)
+	warehouseSvc.SetFinance(financeSvc)
 
 	// MDM service：warehouseSvc 作为 InventoryChecker 注入，删除主数据前做库存引用守卫。
 	mdmSvc := mdmService.NewMDMService(mdmMaterialRepo, mdmSupplierRepo, mdmWarehouseRepo, mdmLocationRepo, mdmCategoryRepo, mdmCustomerRepo, warehouseSvc)

@@ -24,11 +24,37 @@ type InventoryRepository interface {
 	ExistsWarehouseInUse(warehouseID int64) (bool, error)
 	ExistsLocationInUse(locationID int64) (bool, error)
 	SumAvailableQty(materialID int64) (decimal.Decimal, error)
+	ListByWarehouse(warehouseID int64, locationID *int64) ([]model.InvInventory, error)
 }
 
 type StockLedgerRepository interface {
 	Append(tx *gorm.DB, ledger *model.InvStockLedger) error
 	List(materialID int64, bizType int, page, pageSize int) ([]model.InvStockLedger, int64, error)
+}
+
+type StockCheckRepository interface {
+	Create(tx *gorm.DB, check *model.InvStockCheck) error
+	Update(tx *gorm.DB, check *model.InvStockCheck) error
+	FindByID(id int64) (*model.InvStockCheck, error)
+	FindByNo(checkNo string) (*model.InvStockCheck, error)
+	FindByIDForUpdate(tx *gorm.DB, id int64) (*model.InvStockCheck, error)
+	List(warehouseID int64, status int16, checkNo string, page, pageSize int) ([]*model.InvStockCheck, int64, error)
+	IsWarehouseFrozen(warehouseID int64) (bool, error)
+	CreateItems(tx *gorm.DB, items []*model.InvStockCheckItem) error
+	DeleteItemsByCheckID(tx *gorm.DB, checkID int64) error
+	FindItemsByCheckID(checkID int64) ([]*model.InvStockCheckItem, error)
+}
+
+type TransferRepository interface {
+	Create(tx *gorm.DB, transfer *model.InvTransfer) error
+	Update(tx *gorm.DB, transfer *model.InvTransfer) error
+	FindByID(id int64) (*model.InvTransfer, error)
+	FindByNo(transferNo string) (*model.InvTransfer, error)
+	FindByIDForUpdate(tx *gorm.DB, id int64) (*model.InvTransfer, error)
+	List(fromWarehouseID, toWarehouseID int64, status int16, transferNo string, page, pageSize int) ([]*model.InvTransfer, int64, error)
+	CreateItems(tx *gorm.DB, items []*model.InvTransferItem) error
+	UpdateItem(tx *gorm.DB, item *model.InvTransferItem) error
+	FindItemsByTransferID(transferID int64) ([]*model.InvTransferItem, error)
 }
 
 type inventoryRepo struct {
@@ -133,6 +159,18 @@ func (r *inventoryRepo) SumAvailableQty(materialID int64) (decimal.Decimal, erro
 	return total, nil
 }
 
+func (r *inventoryRepo) ListByWarehouse(warehouseID int64, locationID *int64) ([]model.InvInventory, error) {
+	var list []model.InvInventory
+	q := r.db.Where("warehouse_id = ?", warehouseID)
+	if locationID != nil && *locationID > 0 {
+		q = q.Where("location_id = ?", *locationID)
+	}
+	if err := q.Find(&list).Error; err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
 type stockLedgerRepo struct {
 	db *gorm.DB
 }
@@ -163,3 +201,230 @@ func (r *stockLedgerRepo) List(materialID int64, bizType int, page, pageSize int
 	}
 	return list, total, nil
 }
+
+type stockCheckRepo struct {
+	db *gorm.DB
+}
+
+func NewStockCheckRepository(db *gorm.DB) StockCheckRepository {
+	return &stockCheckRepo{db: db}
+}
+
+func (r *stockCheckRepo) Create(tx *gorm.DB, check *model.InvStockCheck) error {
+	db := r.db
+	if tx != nil {
+		db = tx
+	}
+	return db.Create(check).Error
+}
+
+func (r *stockCheckRepo) Update(tx *gorm.DB, check *model.InvStockCheck) error {
+	db := r.db
+	if tx != nil {
+		db = tx
+	}
+	return db.Save(check).Error
+}
+
+func (r *stockCheckRepo) FindByID(id int64) (*model.InvStockCheck, error) {
+	var check model.InvStockCheck
+	if err := r.db.Preload("Items").Where("id = ?", id).First(&check).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, gorm.ErrRecordNotFound
+		}
+		return nil, err
+	}
+	return &check, nil
+}
+
+func (r *stockCheckRepo) FindByNo(checkNo string) (*model.InvStockCheck, error) {
+	var check model.InvStockCheck
+	if err := r.db.Preload("Items").Where("check_no = ?", checkNo).First(&check).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, gorm.ErrRecordNotFound
+		}
+		return nil, err
+	}
+	return &check, nil
+}
+
+func (r *stockCheckRepo) FindByIDForUpdate(tx *gorm.DB, id int64) (*model.InvStockCheck, error) {
+	var check model.InvStockCheck
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Preload("Items").Where("id = ?", id).First(&check).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, gorm.ErrRecordNotFound
+		}
+		return nil, err
+	}
+	return &check, nil
+}
+
+func (r *stockCheckRepo) List(warehouseID int64, status int16, checkNo string, page, pageSize int) ([]*model.InvStockCheck, int64, error) {
+	var list []*model.InvStockCheck
+	var total int64
+	q := r.db.Model(&model.InvStockCheck{})
+	if warehouseID > 0 {
+		q = q.Where("warehouse_id = ?", warehouseID)
+	}
+	if status > 0 {
+		q = q.Where("status = ?", status)
+	}
+	if checkNo != "" {
+		q = q.Where("check_no LIKE ?", "%"+checkNo+"%")
+	}
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if err := q.Preload("Items").Order("created_at DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&list).Error; err != nil {
+		return nil, 0, err
+	}
+	return list, total, nil
+}
+
+func (r *stockCheckRepo) IsWarehouseFrozen(warehouseID int64) (bool, error) {
+	var count int64
+	err := r.db.Model(&model.InvStockCheck{}).
+		Where("warehouse_id = ? AND frozen = TRUE AND status IN (?, ?)", warehouseID, model.StockCheckStatusFrozen, model.StockCheckStatusCounted).
+		Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func (r *stockCheckRepo) CreateItems(tx *gorm.DB, items []*model.InvStockCheckItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	db := r.db
+	if tx != nil {
+		db = tx
+	}
+	return db.Create(&items).Error
+}
+
+func (r *stockCheckRepo) DeleteItemsByCheckID(tx *gorm.DB, checkID int64) error {
+	db := r.db
+	if tx != nil {
+		db = tx
+	}
+	return db.Where("check_id = ?", checkID).Delete(&model.InvStockCheckItem{}).Error
+}
+
+func (r *stockCheckRepo) FindItemsByCheckID(checkID int64) ([]*model.InvStockCheckItem, error) {
+	var items []*model.InvStockCheckItem
+	if err := r.db.Where("check_id = ?", checkID).Find(&items).Error; err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+type transferRepo struct {
+	db *gorm.DB
+}
+
+func NewTransferRepository(db *gorm.DB) TransferRepository {
+	return &transferRepo{db: db}
+}
+
+func (r *transferRepo) Create(tx *gorm.DB, transfer *model.InvTransfer) error {
+	db := r.db
+	if tx != nil {
+		db = tx
+	}
+	return db.Create(transfer).Error
+}
+
+func (r *transferRepo) Update(tx *gorm.DB, transfer *model.InvTransfer) error {
+	db := r.db
+	if tx != nil {
+		db = tx
+	}
+	return db.Save(transfer).Error
+}
+
+func (r *transferRepo) FindByID(id int64) (*model.InvTransfer, error) {
+	var transfer model.InvTransfer
+	if err := r.db.Preload("Items").Where("id = ?", id).First(&transfer).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, gorm.ErrRecordNotFound
+		}
+		return nil, err
+	}
+	return &transfer, nil
+}
+
+func (r *transferRepo) FindByNo(transferNo string) (*model.InvTransfer, error) {
+	var transfer model.InvTransfer
+	if err := r.db.Preload("Items").Where("transfer_no = ?", transferNo).First(&transfer).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, gorm.ErrRecordNotFound
+		}
+		return nil, err
+	}
+	return &transfer, nil
+}
+
+func (r *transferRepo) FindByIDForUpdate(tx *gorm.DB, id int64) (*model.InvTransfer, error) {
+	var transfer model.InvTransfer
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Preload("Items").Where("id = ?", id).First(&transfer).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, gorm.ErrRecordNotFound
+		}
+		return nil, err
+	}
+	return &transfer, nil
+}
+
+func (r *transferRepo) List(fromWarehouseID, toWarehouseID int64, status int16, transferNo string, page, pageSize int) ([]*model.InvTransfer, int64, error) {
+	var list []*model.InvTransfer
+	var total int64
+	q := r.db.Model(&model.InvTransfer{})
+	if fromWarehouseID > 0 {
+		q = q.Where("from_warehouse_id = ?", fromWarehouseID)
+	}
+	if toWarehouseID > 0 {
+		q = q.Where("to_warehouse_id = ?", toWarehouseID)
+	}
+	if status > 0 {
+		q = q.Where("status = ?", status)
+	}
+	if transferNo != "" {
+		q = q.Where("transfer_no LIKE ?", "%"+transferNo+"%")
+	}
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if err := q.Preload("Items").Order("created_at DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&list).Error; err != nil {
+		return nil, 0, err
+	}
+	return list, total, nil
+}
+
+func (r *transferRepo) CreateItems(tx *gorm.DB, items []*model.InvTransferItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	db := r.db
+	if tx != nil {
+		db = tx
+	}
+	return db.Create(&items).Error
+}
+
+func (r *transferRepo) UpdateItem(tx *gorm.DB, item *model.InvTransferItem) error {
+	db := r.db
+	if tx != nil {
+		db = tx
+	}
+	return db.Save(item).Error
+}
+
+func (r *transferRepo) FindItemsByTransferID(transferID int64) ([]*model.InvTransferItem, error) {
+	var items []*model.InvTransferItem
+	if err := r.db.Where("transfer_id = ?", transferID).Find(&items).Error; err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+

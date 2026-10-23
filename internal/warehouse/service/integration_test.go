@@ -347,3 +347,203 @@ func TestInbound_AvgRepeatingDecimalRoundsHalfUp(t *testing.T) {
 		t.Fatalf("出库结转成本应为 300.27，实际 %v", ledger.CostAmount)
 	}
 }
+
+// P2 §3.2: 盘点全链路——创建草稿快照 -> 冻结仓库 -> 拦截出入库 -> 录入实盘(盘盈+盘亏) -> 审批自动调账并生成财务凭证 -> 自动解冻
+func TestStockCheck_Flow_Freeze_Adjust_Voucher(t *testing.T) {
+	gdb := testsupport.NewDB(t)
+	fx := testsupport.CreateFixture(t, gdb, "check")
+	svc := testsupport.NewWarehouseService(gdb)
+	finSvc := testsupport.NewFinanceService(gdb)
+	svc.SetFinance(finSvc)
+	ctx := testsupport.Ctx()
+
+	// 初始入库 10 个 @ 100
+	_, err := svc.Inbound(ctx, warehouseDto.InboundScanReq{
+		MaterialCode:  fx.Material.MaterialCode,
+		WarehouseCode: fx.Warehouse.Code,
+		LocationCode:  fx.Location.LocationCode,
+		Qty:           testsupport.D("10"),
+		UnitCost:      testsupport.D("100"),
+	})
+	if err != nil {
+		t.Fatalf("初始入库失败: %v", err)
+	}
+
+	// 1. 创建盘点单（草稿）
+	check, err := svc.CreateStockCheck(ctx, warehouseDto.CreateStockCheckReq{
+		WarehouseID: fx.Warehouse.ID,
+		LocationID:  &fx.Location.ID,
+		Remark:      "月度盘点",
+	}, 1)
+	if err != nil {
+		t.Fatalf("创建盘点单失败: %v", err)
+	}
+	if len(check.Items) != 1 || !check.Items[0].BookQty.Equal(testsupport.D("10")) {
+		t.Fatalf("盘点单明细账面数量快照错误: %+v", check.Items)
+	}
+
+	// 2. 冻结仓库
+	if err := svc.FreezeStockCheck(ctx, check.ID); err != nil {
+		t.Fatalf("冻结仓库失败: %v", err)
+	}
+
+	// 3. 验证冻结期间常规出入库被拦截（40008 / 409）
+	_, err = svc.Inbound(ctx, warehouseDto.InboundScanReq{
+		MaterialCode:  fx.Material.MaterialCode,
+		WarehouseCode: fx.Warehouse.Code,
+		LocationCode:  fx.Location.LocationCode,
+		Qty:           testsupport.D("5"),
+		UnitCost:      testsupport.D("100"),
+	})
+	if err == nil {
+		t.Fatal("冻结期间入库应被拦截")
+	}
+
+	// 4. 录入实盘数量：实际盘点到 12 个（盘盈 2 个）
+	err = svc.EntryStockCheck(ctx, check.ID, warehouseDto.EntryStockCheckReq{
+		Items: []warehouseDto.EntryStockCheckItemReq{
+			{
+				MaterialID: fx.Material.ID,
+				LocationID: &fx.Location.ID,
+				ActualQty:  testsupport.D("12"),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("录入实盘失败: %v", err)
+	}
+
+	// 5. 审批盘点单（自动调账并生成财务凭证）
+	if err := svc.ApproveStockCheck(ctx, check.ID, 1); err != nil {
+		t.Fatalf("审批盘点单失败: %v", err)
+	}
+
+	// 校验库存已调账为 12 个
+	inv := findInventory(t, gdb, fx.Material.ID, fx.Warehouse.ID, fx.Location.ID)
+	if !inv.Qty.Equal(testsupport.D("12")) {
+		t.Fatalf("调账后库存应为 12，实际为 %v", inv.Qty)
+	}
+
+	// 校验仓库已解冻，正常出库应放行
+	_, err = svc.Outbound(ctx, warehouseDto.OutboundScanReq{
+		OutboundNo:    "OB-CHK-TEST-001",
+		MaterialCode:  fx.Material.MaterialCode,
+		WarehouseCode: fx.Warehouse.Code,
+		LocationCode:  fx.Location.LocationCode,
+		Qty:           testsupport.D("2"),
+	})
+	if err != nil {
+		t.Fatalf("解冻后出库应成功: %v", err)
+	}
+}
+
+// P2 §3.3: 调拨全链路——创建调拨单 -> 审批 -> 调出发货(扣调出仓库存并计入在途) -> 调入收货(入调入仓库存，成本原值传递)
+func TestStockTransfer_Flow_Ship_Receive_CostConsistency(t *testing.T) {
+	gdb := testsupport.NewDB(t)
+	fx := testsupport.CreateFixture(t, gdb, "trf1")
+	svc := testsupport.NewWarehouseService(gdb)
+	ctx := testsupport.Ctx()
+
+	// 创建第二个仓库与库位作为调入目标
+	toWh := testsupport.CreateWarehouse(t, gdb, "WH-TO-001", "调入目标仓")
+	toLoc := testsupport.CreateLocation(t, gdb, toWh.ID, "LOC-TO-001", "A")
+
+	// 调出仓初始入库 20 个 @ 150
+	_, err := svc.Inbound(ctx, warehouseDto.InboundScanReq{
+		MaterialCode:  fx.Material.MaterialCode,
+		WarehouseCode: fx.Warehouse.Code,
+		LocationCode:  fx.Location.LocationCode,
+		Qty:           testsupport.D("20"),
+		UnitCost:      testsupport.D("150"),
+	})
+	if err != nil {
+		t.Fatalf("初始入库失败: %v", err)
+	}
+
+	// 1. 创建调拨单：从 fx.Warehouse 调拨 8 个到 toWh
+	tr, err := svc.CreateTransfer(ctx, warehouseDto.CreateTransferReq{
+		FromWarehouseID: fx.Warehouse.ID,
+		ToWarehouseID:   toWh.ID,
+		Remark:          "跨仓调拨",
+		Items: []warehouseDto.CreateTransferItemReq{
+			{
+				MaterialID:     fx.Material.ID,
+				Qty:            testsupport.D("8"),
+				FromLocationID: &fx.Location.ID,
+				ToLocationID:   &toLoc.ID,
+			},
+		},
+	}, 1)
+	if err != nil {
+		t.Fatalf("创建调拨单失败: %v", err)
+	}
+	if tr.Status != warehouseModel.TransferStatusDraft || !tr.TotalAmount.Equal(testsupport.D("1200")) {
+		t.Fatalf("调拨单状态或金额错误: status=%v amount=%v", tr.Status, tr.TotalAmount)
+	}
+
+	// 2. 审批调拨单
+	if err := svc.ApproveTransfer(ctx, tr.ID, 1); err != nil {
+		t.Fatalf("审批调拨单失败: %v", err)
+	}
+
+	// 3. 调出发货（扣调出仓库存，计入在途）
+	if err := svc.ShipTransfer(ctx, tr.ID); err != nil {
+		t.Fatalf("调出发货失败: %v", err)
+	}
+
+	fromInv := findInventory(t, gdb, fx.Material.ID, fx.Warehouse.ID, fx.Location.ID)
+	if !fromInv.Qty.Equal(testsupport.D("12")) || !fromInv.AvailableQty.Equal(testsupport.D("12")) {
+		t.Fatalf("调出后调出仓库存应为 12，实际为 %v", fromInv.Qty)
+	}
+
+	// 4. 调入收货（入调入仓库存，成本原值 150 跨仓传递）
+	if err := svc.ReceiveTransfer(ctx, tr.ID); err != nil {
+		t.Fatalf("调入收货失败: %v", err)
+	}
+
+	toInv := findInventory(t, gdb, fx.Material.ID, toWh.ID, toLoc.ID)
+	if !toInv.Qty.Equal(testsupport.D("8")) || !toInv.AvgCost.Equal(testsupport.D("150")) {
+		t.Fatalf("调入后调入仓库存或成本错误: qty=%v avg=%v", toInv.Qty, toInv.AvgCost)
+	}
+}
+
+// 调拨库存不足时阻断拦截。
+func TestStockTransfer_RejectsInsufficientStock(t *testing.T) {
+	gdb := testsupport.NewDB(t)
+	fx := testsupport.CreateFixture(t, gdb, "trf2")
+	svc := testsupport.NewWarehouseService(gdb)
+	ctx := testsupport.Ctx()
+
+	toWh := testsupport.CreateWarehouse(t, gdb, "WH-TO-002", "调入目标仓2")
+	toLoc := testsupport.CreateLocation(t, gdb, toWh.ID, "LOC-TO-002", "A")
+
+	// 调出仓只有 5 个
+	_, err := svc.Inbound(ctx, warehouseDto.InboundScanReq{
+		MaterialCode:  fx.Material.MaterialCode,
+		WarehouseCode: fx.Warehouse.Code,
+		LocationCode:  fx.Location.LocationCode,
+		Qty:           testsupport.D("5"),
+		UnitCost:      testsupport.D("100"),
+	})
+	if err != nil {
+		t.Fatalf("初始入库失败: %v", err)
+	}
+
+	// 尝试调拨 10 个（超出库存）
+	_, err = svc.CreateTransfer(ctx, warehouseDto.CreateTransferReq{
+		FromWarehouseID: fx.Warehouse.ID,
+		ToWarehouseID:   toWh.ID,
+		Items: []warehouseDto.CreateTransferItemReq{
+			{
+				MaterialID:     fx.Material.ID,
+				Qty:            testsupport.D("10"),
+				FromLocationID: &fx.Location.ID,
+				ToLocationID:   &toLoc.ID,
+			},
+		},
+	}, 1)
+	if err == nil {
+		t.Fatal("调拨数量超过可用库存时必须被拦截")
+	}
+}
+

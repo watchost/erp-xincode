@@ -265,6 +265,26 @@ func CreateCustomer(t *testing.T, gdb *gorm.DB, codeSuffix string, creditLimit d
 	return c
 }
 
+// CreateWarehouse 写入仓库夹具。
+func CreateWarehouse(t *testing.T, gdb *gorm.DB, code, name string) *mdmModel.MdmWarehouse {
+	t.Helper()
+	w := &mdmModel.MdmWarehouse{Code: code, Name: name, Type: 1}
+	if err := gdb.Create(w).Error; err != nil {
+		t.Fatalf("创建仓库夹具失败: %v", err)
+	}
+	return w
+}
+
+// CreateLocation 写入库位夹具。
+func CreateLocation(t *testing.T, gdb *gorm.DB, warehouseID int64, locationCode, zone string) *mdmModel.MdmLocation {
+	t.Helper()
+	loc := &mdmModel.MdmLocation{WarehouseID: warehouseID, LocationCode: locationCode, Zone: zone}
+	if err := gdb.Create(loc).Error; err != nil {
+		t.Fatalf("创建库位夹具失败: %v", err)
+	}
+	return loc
+}
+
 // Ctx 返回带用户 ID 的上下文（单据 CreatedBy 取登录用户）。
 func Ctx() context.Context {
 	return context.Background()
@@ -277,7 +297,7 @@ func CtxWithUser(userID int64) context.Context {
 
 // NewWarehouseService 装配仓库 service（Redis 用 nil：单号走进程内兜底，幂等守卫关闭）。
 func NewWarehouseService(gdb *gorm.DB) *warehouseService.WarehouseService {
-	return warehouseService.NewWarehouseService(
+	svc := warehouseService.NewWarehouseService(
 		db.NewTxManager(gdb),
 		warehouseRepo.NewInventoryRepository(gdb),
 		warehouseRepo.NewStockLedgerRepository(gdb),
@@ -287,6 +307,9 @@ func NewWarehouseService(gdb *gorm.DB) *warehouseService.WarehouseService {
 		bizno.NewGenerator(nil),
 		nil,
 	)
+	svc.SetStockCheckRepository(warehouseRepo.NewStockCheckRepository(gdb))
+	svc.SetTransferRepository(warehouseRepo.NewTransferRepository(gdb))
+	return svc
 }
 
 // NewFinanceService 装配财务 service。

@@ -26,15 +26,18 @@ const (
 	AccountProductionCost = "5001" // 生产成本（成本类，借增贷减；余额为在产品）
 	AccountMainRevenue    = "6001" // 主营业务收入（损益类，贷增借减）
 	AccountMainCost       = "6401" // 主营业务成本（损益类，借增贷减）
+	AccountPendingLoss    = "1901" // 待处理财产损溢（资产类/过渡科目，借方盘亏/贷方盘盈）
 )
 
 // 业务事件类型，写入 fin_voucher.biz_type，便于按事件溯源与对账。
 const (
-	BizTypePurchaseInbound   = "purchase_inbound"   // 采购入库
-	BizTypeProductionIssue   = "production_issue"   // 生产领料
-	BizTypeProductionReceipt = "production_receipt" // 生产入库/完工报工
-	BizTypeSalesOutbound     = "sales_outbound"     // 销售出库（P2 §3.1）
-	BizTypeSalesReturn       = "sales_return"       // 销售退货入库（P2 §3.1）
+	BizTypePurchaseInbound    = "purchase_inbound"    // 采购入库
+	BizTypeProductionIssue    = "production_issue"    // 生产领料
+	BizTypeProductionReceipt  = "production_receipt"  // 生产入库/完工报工
+	BizTypeSalesOutbound      = "sales_outbound"      // 销售出库（P2 §3.1）
+	BizTypeSalesReturn        = "sales_return"        // 销售退货入库（P2 §3.1）
+	BizTypeInventoryCheckGain = "inventory_check_gain" // 盘盈入库（P2 §3.2）
+	BizTypeInventoryCheckLoss = "inventory_check_loss" // 盘亏出库（P2 §3.2）
 )
 
 // 成本卡来源类型，写入 fin_cost.source_type。

@@ -29,6 +29,20 @@ const (
 	PermWarehouseOutbound  = "warehouse:outbound"
 	PermWarehouseInventory = "warehouse:inventory"
 
+	PermWarehouseCheckView    = "warehouse:check:view"
+	PermWarehouseCheckCreate  = "warehouse:check:create"
+	PermWarehouseCheckFreeze  = "warehouse:check:freeze"
+	PermWarehouseCheckEntry   = "warehouse:check:entry"
+	PermWarehouseCheckApprove = "warehouse:check:approve"
+	PermWarehouseCheckCancel  = "warehouse:check:cancel"
+
+	PermWarehouseTransferView    = "warehouse:transfer:view"
+	PermWarehouseTransferCreate  = "warehouse:transfer:create"
+	PermWarehouseTransferApprove = "warehouse:transfer:approve"
+	PermWarehouseTransferShip    = "warehouse:transfer:ship"
+	PermWarehouseTransferReceive = "warehouse:transfer:receive"
+	PermWarehouseTransferCancel  = "warehouse:transfer:cancel"
+
 	PermPurchaseOrderView    = "purchase:order:view"
 	PermPurchaseOrderCreate  = "purchase:order:create"
 	PermPurchaseOrderApprove = "purchase:order:approve"
@@ -230,6 +244,24 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 			warehouse.POST("/outbound/scan", middleware.RequirePermission(PermWarehouseOutbound), d.Warehouse.OutboundScan)
 			warehouse.GET("/inventory", middleware.RequirePermission(PermWarehouseInventory), d.Warehouse.ListInventory)
 			warehouse.GET("/stock-alerts", middleware.RequirePermission(PermWarehouseInventory), d.Warehouse.GetStockAlerts)
+
+			// 盘点
+			warehouse.POST("/stock-checks", middleware.RequirePermission(PermWarehouseCheckCreate), d.Warehouse.CreateStockCheck)
+			warehouse.GET("/stock-checks", middleware.RequirePermission(PermWarehouseCheckView), d.Warehouse.ListStockChecks)
+			warehouse.GET("/stock-checks/:id", middleware.RequirePermission(PermWarehouseCheckView), d.Warehouse.GetStockCheck)
+			warehouse.POST("/stock-checks/:id/freeze", middleware.RequirePermission(PermWarehouseCheckFreeze), d.Warehouse.FreezeStockCheck)
+			warehouse.POST("/stock-checks/:id/items", middleware.RequirePermission(PermWarehouseCheckEntry), d.Warehouse.EntryStockCheck)
+			warehouse.POST("/stock-checks/:id/approve", middleware.RequirePermission(PermWarehouseCheckApprove), d.Warehouse.ApproveStockCheck)
+			warehouse.POST("/stock-checks/:id/cancel", middleware.RequirePermission(PermWarehouseCheckCancel), d.Warehouse.CancelStockCheck)
+
+			// 调拨
+			warehouse.POST("/transfers", middleware.RequirePermission(PermWarehouseTransferCreate), d.Warehouse.CreateTransfer)
+			warehouse.GET("/transfers", middleware.RequirePermission(PermWarehouseTransferView), d.Warehouse.ListTransfers)
+			warehouse.GET("/transfers/:id", middleware.RequirePermission(PermWarehouseTransferView), d.Warehouse.GetTransfer)
+			warehouse.POST("/transfers/:id/approve", middleware.RequirePermission(PermWarehouseTransferApprove), d.Warehouse.ApproveTransfer)
+			warehouse.POST("/transfers/:id/ship", middleware.RequirePermission(PermWarehouseTransferShip), d.Warehouse.ShipTransfer)
+			warehouse.POST("/transfers/:id/receive", middleware.RequirePermission(PermWarehouseTransferReceive), d.Warehouse.ReceiveTransfer)
+			warehouse.POST("/transfers/:id/cancel", middleware.RequirePermission(PermWarehouseTransferCancel), d.Warehouse.CancelTransfer)
 		}
 
 		purchase := api.Group("/purchase")

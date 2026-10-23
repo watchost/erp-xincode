@@ -4,11 +4,14 @@ package service
 
 import (
 	"context"
+	stdErrors "errors"
+	"fmt"
 	"time"
 
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 
+	financeService "erp-system/internal/finance/service"
 	mdmRepo "erp-system/internal/mdm/repository"
 	"erp-system/internal/pkg/bizno"
 	"erp-system/internal/pkg/db"
@@ -35,15 +38,22 @@ type IdempotencyGuard interface {
 	Acquire(ctx context.Context, scope, key string) error
 }
 
+type FinancePoster interface {
+	PostTx(ctx context.Context, tx *gorm.DB, in financeService.PostingInput) error
+}
+
 type WarehouseService struct {
-	txManager     *db.TxManager
-	invRepo       repository.InventoryRepository
-	ledgerRepo    repository.StockLedgerRepository
-	materialRepo  mdmRepo.MaterialRepository
-	warehouseRepo mdmRepo.WarehouseRepository
-	locationRepo  mdmRepo.LocationRepository
-	numbers       *bizno.Generator
-	idemp         IdempotencyGuard
+	txManager       *db.TxManager
+	invRepo         repository.InventoryRepository
+	ledgerRepo      repository.StockLedgerRepository
+	stockCheckRepo  repository.StockCheckRepository
+	transferRepo    repository.TransferRepository
+	materialRepo    mdmRepo.MaterialRepository
+	warehouseRepo   mdmRepo.WarehouseRepository
+	locationRepo    mdmRepo.LocationRepository
+	numbers         *bizno.Generator
+	idemp           IdempotencyGuard
+	finance         FinancePoster
 }
 
 func NewWarehouseService(
@@ -66,6 +76,18 @@ func NewWarehouseService(
 		numbers:       numbers,
 		idemp:         idempGuard,
 	}
+}
+
+func (s *WarehouseService) SetStockCheckRepository(r repository.StockCheckRepository) {
+	s.stockCheckRepo = r
+}
+
+func (s *WarehouseService) SetTransferRepository(r repository.TransferRepository) {
+	s.transferRepo = r
+}
+
+func (s *WarehouseService) SetFinance(f FinancePoster) {
+	s.finance = f
 }
 
 func (s *WarehouseService) generateNo(ctx context.Context, prefix string) string {
@@ -194,6 +216,16 @@ func (s *WarehouseService) Outbound(ctx context.Context, req dto.OutboundScanReq
 // 移动平均成本：new_avg = (old_avg*old_qty + unit_cost*in_qty) / (old_qty + in_qty)。
 // 当 unitCost 为 0（来源未知单价）时保持原 avg_cost，不再把成本冲为 0。
 func (s *WarehouseService) ApplyInboundTx(ctx context.Context, tx *gorm.DB, in dto.MoveInput) (dto.MoveResult, error) {
+	if in.BizType != BizTypeInventoryCheck && s.stockCheckRepo != nil {
+		frozen, err := s.stockCheckRepo.IsWarehouseFrozen(in.WarehouseID)
+		if err != nil {
+			return dto.MoveResult{}, err
+		}
+		if frozen {
+			return dto.MoveResult{}, errors.New(40008, 409, "目标仓库处于盘点冻结状态，禁止出入库")
+		}
+	}
+
 	inv, err := s.invRepo.FindForUpdate(tx, in.MaterialID, in.WarehouseID, in.LocationID)
 	if err != nil && err != gorm.ErrRecordNotFound {
 		return dto.MoveResult{}, err
@@ -252,6 +284,16 @@ func (s *WarehouseService) ApplyInboundTx(ctx context.Context, tx *gorm.DB, in d
 // ApplyOutboundTx 在调用方事务内执行出库并扣减库存。
 // 成本按当前移动加权平均单价结转：cost_amount = avg_cost * qty。
 func (s *WarehouseService) ApplyOutboundTx(ctx context.Context, tx *gorm.DB, in dto.MoveInput) (dto.MoveResult, error) {
+	if in.BizType != BizTypeInventoryCheck && s.stockCheckRepo != nil {
+		frozen, err := s.stockCheckRepo.IsWarehouseFrozen(in.WarehouseID)
+		if err != nil {
+			return dto.MoveResult{}, err
+		}
+		if frozen {
+			return dto.MoveResult{}, errors.New(40008, 409, "目标仓库处于盘点冻结状态，禁止出入库")
+		}
+	}
+
 	inv, err := s.invRepo.FindForUpdate(tx, in.MaterialID, in.WarehouseID, in.LocationID)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -389,3 +431,543 @@ func (s *WarehouseService) GetStockAlerts(ctx context.Context) ([]dto.StockAlert
 	}
 	return vos, nil
 }
+
+// ----------------- P2 §3.2 库存盘点核心业务实现 -----------------
+
+func (s *WarehouseService) CreateStockCheck(ctx context.Context, req dto.CreateStockCheckReq, userID int64) (*warehouseModel.InvStockCheck, error) {
+	if _, err := s.warehouseRepo.FindByID(req.WarehouseID); err != nil {
+		return nil, errors.New(30002, 404, "仓库不存在")
+	}
+	if req.LocationID != nil && *req.LocationID > 0 {
+		if _, err := s.locationRepo.FindByID(*req.LocationID); err != nil {
+			return nil, errors.New(30002, 404, "库位不存在")
+		}
+	}
+
+	checkNo := s.generateNo(ctx, "SC")
+	invList, err := s.invRepo.ListByWarehouse(req.WarehouseID, req.LocationID)
+	if err != nil {
+		return nil, err
+	}
+
+	check := &warehouseModel.InvStockCheck{
+		CheckNo:         checkNo,
+		WarehouseID:     req.WarehouseID,
+		LocationID:      req.LocationID,
+		Status:          warehouseModel.StockCheckStatusDraft,
+		Frozen:          false,
+		TotalDiffAmount: decimal.Zero,
+		Remark:          req.Remark,
+		CreatedBy:       userID,
+		CreatedAt:       time.Now(),
+		UpdatedAt:       time.Now(),
+	}
+
+	var items []*warehouseModel.InvStockCheckItem
+	for _, inv := range invList {
+		locID := inv.LocationID
+		items = append(items, &warehouseModel.InvStockCheckItem{
+			MaterialID: inv.MaterialID,
+			LocationID: &locID,
+			BookQty:    inv.Qty,
+			ActualQty:  inv.Qty,
+			DiffQty:    decimal.Zero,
+			UnitCost:   inv.AvgCost,
+			DiffAmount: decimal.Zero,
+		})
+	}
+
+	err = s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
+		if err := s.stockCheckRepo.Create(tx, check); err != nil {
+			return err
+		}
+		for _, item := range items {
+			item.CheckID = check.ID
+		}
+		return s.stockCheckRepo.CreateItems(tx, items)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	check.Items = items
+	return check, nil
+}
+
+func (s *WarehouseService) FreezeStockCheck(ctx context.Context, checkID int64) error {
+	return s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
+		check, err := s.stockCheckRepo.FindByIDForUpdate(tx, checkID)
+		if err != nil {
+			if stdErrors.Is(err, gorm.ErrRecordNotFound) {
+				return errors.New(40001, 404, "盘点单不存在")
+			}
+			return err
+		}
+		if check.Status != warehouseModel.StockCheckStatusDraft {
+			return errors.New(40002, 400, "仅草稿状态的盘点单可冻结仓库")
+		}
+		check.Frozen = true
+		check.Status = warehouseModel.StockCheckStatusFrozen
+		check.UpdatedAt = time.Now()
+		return s.stockCheckRepo.Update(tx, check)
+	})
+}
+
+func (s *WarehouseService) EntryStockCheck(ctx context.Context, checkID int64, req dto.EntryStockCheckReq) error {
+	return s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
+		check, err := s.stockCheckRepo.FindByIDForUpdate(tx, checkID)
+		if err != nil {
+			if stdErrors.Is(err, gorm.ErrRecordNotFound) {
+				return errors.New(40001, 404, "盘点单不存在")
+			}
+			return err
+		}
+		if check.Status != warehouseModel.StockCheckStatusDraft &&
+			check.Status != warehouseModel.StockCheckStatusFrozen &&
+			check.Status != warehouseModel.StockCheckStatusCounted {
+			return errors.New(40003, 400, "当前状态不允许录入实盘数量")
+		}
+
+		// 构建实盘录入映射
+		type entryKey struct {
+			materialID int64
+			locationID int64
+		}
+		entryMap := make(map[entryKey]decimal.Decimal, len(req.Items))
+		for _, itemReq := range req.Items {
+			locID := int64(0)
+			if itemReq.LocationID != nil {
+				locID = *itemReq.LocationID
+			}
+			entryMap[entryKey{materialID: itemReq.MaterialID, locationID: locID}] = decimalx.Qty(itemReq.ActualQty)
+		}
+
+		var totalDiff decimal.Decimal
+		// 更新现有明细
+		for _, item := range check.Items {
+			locID := int64(0)
+			if item.LocationID != nil {
+				locID = *item.LocationID
+			}
+			key := entryKey{materialID: item.MaterialID, locationID: locID}
+			if actual, exists := entryMap[key]; exists {
+				item.ActualQty = actual
+				item.DiffQty = actual.Sub(item.BookQty)
+				item.DiffAmount = decimalx.Money(item.UnitCost.Mul(item.DiffQty))
+				totalDiff = totalDiff.Add(item.DiffAmount)
+				delete(entryMap, key)
+			}
+		}
+
+		// 若有账面没有但在实盘中录入的新物料/库位
+		for key, actual := range entryMap {
+			var locIDPtr *int64
+			if key.locationID > 0 {
+				loc := key.locationID
+				locIDPtr = &loc
+			}
+			diffQty := actual
+			diffAmount := decimal.Zero
+			check.Items = append(check.Items, &warehouseModel.InvStockCheckItem{
+				CheckID:    check.ID,
+				MaterialID: key.materialID,
+				LocationID: locIDPtr,
+				BookQty:    decimal.Zero,
+				ActualQty:  actual,
+				DiffQty:    diffQty,
+				UnitCost:   decimal.Zero,
+				DiffAmount: diffAmount,
+			})
+			totalDiff = totalDiff.Add(diffAmount)
+		}
+
+		if err := s.stockCheckRepo.DeleteItemsByCheckID(tx, check.ID); err != nil {
+			return err
+		}
+		if err := s.stockCheckRepo.CreateItems(tx, check.Items); err != nil {
+			return err
+		}
+
+		check.TotalDiffAmount = totalDiff
+		check.Status = warehouseModel.StockCheckStatusCounted
+		check.UpdatedAt = time.Now()
+		return s.stockCheckRepo.Update(tx, check)
+	})
+}
+
+func (s *WarehouseService) ApproveStockCheck(ctx context.Context, checkID int64, approvedBy int64) error {
+	return s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
+		check, err := s.stockCheckRepo.FindByIDForUpdate(tx, checkID)
+		if err != nil {
+			if stdErrors.Is(err, gorm.ErrRecordNotFound) {
+				return errors.New(40001, 404, "盘点单不存在")
+			}
+			return err
+		}
+		if check.Status != warehouseModel.StockCheckStatusCounted && check.Status != warehouseModel.StockCheckStatusFrozen {
+			return errors.New(40002, 400, "仅盘点中或已录入实盘的盘点单可审批")
+		}
+
+		now := time.Now()
+		var totalDiffAmount decimal.Decimal
+		var gainLines []financeService.PostingLine
+		var lossLines []financeService.PostingLine
+
+		for _, item := range check.Items {
+			diffQty := item.DiffQty
+			if diffQty.IsZero() {
+				continue
+			}
+			locID := int64(0)
+			if item.LocationID != nil {
+				locID = *item.LocationID
+			}
+
+			if diffQty.GreaterThan(decimal.Zero) {
+				// 盘盈入库
+				inRes, err := s.ApplyInboundTx(ctx, tx, dto.MoveInput{
+					MaterialID:  item.MaterialID,
+					WarehouseID: check.WarehouseID,
+					LocationID:  locID,
+					Qty:         diffQty,
+					UnitCost:    item.UnitCost,
+					BizType:     BizTypeInventoryCheck,
+					BizNo:       check.CheckNo,
+				})
+				if err != nil {
+					return err
+				}
+				diffAmount := decimalx.Money(item.UnitCost.Mul(diffQty))
+				item.DiffAmount = diffAmount
+				totalDiffAmount = totalDiffAmount.Add(diffAmount)
+				_ = inRes
+
+				gainLines = append(gainLines,
+					financeService.PostingLine{AccountCode: financeService.AccountFinishedGoods, Debit: diffAmount},
+					financeService.PostingLine{AccountCode: financeService.AccountPendingLoss, Credit: diffAmount},
+				)
+			} else {
+				// 盘亏出库
+				absDiff := diffQty.Abs()
+				outRes, err := s.ApplyOutboundTx(ctx, tx, dto.MoveInput{
+					MaterialID:  item.MaterialID,
+					WarehouseID: check.WarehouseID,
+					LocationID:  locID,
+					Qty:         absDiff,
+					BizType:     BizTypeInventoryCheck,
+					BizNo:       check.CheckNo,
+				})
+				if err != nil {
+					return err
+				}
+				diffAmount := decimalx.Money(outRes.CostAmount.Neg())
+				item.DiffAmount = diffAmount
+				totalDiffAmount = totalDiffAmount.Add(diffAmount)
+
+				lossLines = append(lossLines,
+					financeService.PostingLine{AccountCode: financeService.AccountPendingLoss, Debit: outRes.CostAmount},
+					financeService.PostingLine{AccountCode: financeService.AccountFinishedGoods, Credit: outRes.CostAmount},
+				)
+			}
+		}
+
+		// 财务过账
+		if s.finance != nil {
+			if len(gainLines) >= 2 {
+				if err := s.finance.PostTx(ctx, tx, financeService.PostingInput{
+					BizType:     financeService.BizTypeInventoryCheckGain,
+					BizNo:       check.CheckNo,
+					Description: fmt.Sprintf("盘点单 %s 盘盈入库", check.CheckNo),
+					CreatedBy:   approvedBy,
+					Lines:       gainLines,
+				}); err != nil {
+					return err
+				}
+			}
+			if len(lossLines) >= 2 {
+				if err := s.finance.PostTx(ctx, tx, financeService.PostingInput{
+					BizType:     financeService.BizTypeInventoryCheckLoss,
+					BizNo:       check.CheckNo,
+					Description: fmt.Sprintf("盘点单 %s 盘亏出库", check.CheckNo),
+					CreatedBy:   approvedBy,
+					Lines:       lossLines,
+				}); err != nil {
+					return err
+				}
+			}
+		}
+
+		check.TotalDiffAmount = totalDiffAmount
+		check.Frozen = false
+		check.Status = warehouseModel.StockCheckStatusCompleted
+		check.ApprovedBy = &approvedBy
+		check.ApprovedAt = &now
+		check.UpdatedAt = now
+
+		return s.stockCheckRepo.Update(tx, check)
+	})
+}
+
+func (s *WarehouseService) CancelStockCheck(ctx context.Context, checkID int64) error {
+	return s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
+		check, err := s.stockCheckRepo.FindByIDForUpdate(tx, checkID)
+		if err != nil {
+			if stdErrors.Is(err, gorm.ErrRecordNotFound) {
+				return errors.New(40001, 404, "盘点单不存在")
+			}
+			return err
+		}
+		if check.Status == warehouseModel.StockCheckStatusCompleted {
+			return errors.New(40004, 400, "已完成的盘点单不能取消")
+		}
+		check.Frozen = false
+		check.Status = warehouseModel.StockCheckStatusCancelled
+		check.UpdatedAt = time.Now()
+		return s.stockCheckRepo.Update(tx, check)
+	})
+}
+
+func (s *WarehouseService) GetStockCheck(ctx context.Context, id int64) (*warehouseModel.InvStockCheck, error) {
+	check, err := s.stockCheckRepo.FindByID(id)
+	if err != nil {
+		if stdErrors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.New(40001, 404, "盘点单不存在")
+		}
+		return nil, err
+	}
+	return check, nil
+}
+
+func (s *WarehouseService) ListStockChecks(ctx context.Context, req dto.StockCheckQuery) ([]*warehouseModel.InvStockCheck, int64, error) {
+	return s.stockCheckRepo.List(req.WarehouseID, req.Status, req.CheckNo, req.Page, req.PageSize)
+}
+
+// ----------------- P2 §3.3 库存调拨核心业务实现 -----------------
+
+func (s *WarehouseService) CreateTransfer(ctx context.Context, req dto.CreateTransferReq, userID int64) (*warehouseModel.InvTransfer, error) {
+	if req.FromWarehouseID == req.ToWarehouseID {
+		return nil, errors.New(40009, 400, "调出仓库与调入仓库不能相同")
+	}
+	if _, err := s.warehouseRepo.FindByID(req.FromWarehouseID); err != nil {
+		return nil, errors.New(30002, 404, "调出仓库不存在")
+	}
+	if _, err := s.warehouseRepo.FindByID(req.ToWarehouseID); err != nil {
+		return nil, errors.New(30002, 404, "调入仓库不存在")
+	}
+
+	transferNo := s.generateNo(ctx, "TR")
+	var transfer *warehouseModel.InvTransfer
+
+	err := s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
+		var totalAmount decimal.Decimal
+		var items []*warehouseModel.InvTransferItem
+
+		for _, itemReq := range req.Items {
+			m, err := s.materialRepo.FindByID(itemReq.MaterialID)
+			if err != nil || m == nil {
+				return errors.New(30002, 404, fmt.Sprintf("物料 ID=%d 不存在", itemReq.MaterialID))
+			}
+			fromLocID := int64(0)
+			if itemReq.FromLocationID != nil {
+				fromLocID = *itemReq.FromLocationID
+			}
+			// 校验调出仓可用库存
+			inv, err := s.invRepo.FindForUpdate(tx, itemReq.MaterialID, req.FromWarehouseID, fromLocID)
+			if err != nil || inv.AvailableQty.Cmp(itemReq.Qty) < 0 {
+				return errors.New(30001, 409, fmt.Sprintf("物料 %s 在调出仓库存不足", m.MaterialCode))
+			}
+
+			itemQty := decimalx.Qty(itemReq.Qty)
+			unitCost := inv.AvgCost
+			itemAmount := decimalx.Money(unitCost.Mul(itemQty))
+			totalAmount = totalAmount.Add(itemAmount)
+
+			items = append(items, &warehouseModel.InvTransferItem{
+				MaterialID:     itemReq.MaterialID,
+				Qty:            itemQty,
+				ShippedQty:     decimal.Zero,
+				ReceivedQty:    decimal.Zero,
+				UnitCost:       unitCost,
+				TotalAmount:    itemAmount,
+				FromLocationID: itemReq.FromLocationID,
+				ToLocationID:   itemReq.ToLocationID,
+			})
+		}
+
+		transfer = &warehouseModel.InvTransfer{
+			TransferNo:      transferNo,
+			FromWarehouseID: req.FromWarehouseID,
+			ToWarehouseID:   req.ToWarehouseID,
+			Status:          warehouseModel.TransferStatusDraft,
+			TotalAmount:     totalAmount,
+			Remark:          req.Remark,
+			CreatedBy:       userID,
+			CreatedAt:       time.Now(),
+			UpdatedAt:       time.Now(),
+		}
+
+		if err := s.transferRepo.Create(tx, transfer); err != nil {
+			return err
+		}
+		for _, item := range items {
+			item.TransferID = transfer.ID
+		}
+		if err := s.transferRepo.CreateItems(tx, items); err != nil {
+			return err
+		}
+		transfer.Items = items
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return transfer, nil
+}
+
+func (s *WarehouseService) ApproveTransfer(ctx context.Context, transferID int64, approvedBy int64) error {
+	return s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
+		transfer, err := s.transferRepo.FindByIDForUpdate(tx, transferID)
+		if err != nil {
+			if stdErrors.Is(err, gorm.ErrRecordNotFound) {
+				return errors.New(40010, 404, "调拨单不存在")
+			}
+			return err
+		}
+		if transfer.Status != warehouseModel.TransferStatusDraft {
+			return errors.New(40011, 400, "仅草稿状态的调拨单可审批")
+		}
+		transfer.Status = warehouseModel.TransferStatusApproved
+		transfer.UpdatedAt = time.Now()
+		return s.transferRepo.Update(tx, transfer)
+	})
+}
+
+func (s *WarehouseService) ShipTransfer(ctx context.Context, transferID int64) error {
+	return s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
+		transfer, err := s.transferRepo.FindByIDForUpdate(tx, transferID)
+		if err != nil {
+			if stdErrors.Is(err, gorm.ErrRecordNotFound) {
+				return errors.New(40010, 404, "调拨单不存在")
+			}
+			return err
+		}
+		if transfer.Status != warehouseModel.TransferStatusApproved {
+			return errors.New(40011, 400, "仅已审批的调拨单可发货")
+		}
+
+		now := time.Now()
+		var totalAmount decimal.Decimal
+		for _, item := range transfer.Items {
+			fromLocID := int64(0)
+			if item.FromLocationID != nil {
+				fromLocID = *item.FromLocationID
+			}
+			outRes, err := s.ApplyOutboundTx(ctx, tx, dto.MoveInput{
+				MaterialID:  item.MaterialID,
+				WarehouseID: transfer.FromWarehouseID,
+				LocationID:  fromLocID,
+				Qty:         item.Qty,
+				BizType:     BizTypeLocationTransfer,
+				BizNo:       transfer.TransferNo,
+			})
+			if err != nil {
+				return err
+			}
+			item.UnitCost = outRes.AvgCost
+			item.ShippedQty = item.Qty
+			item.TotalAmount = outRes.CostAmount
+			totalAmount = totalAmount.Add(outRes.CostAmount)
+			if err := s.transferRepo.UpdateItem(tx, item); err != nil {
+				return err
+			}
+		}
+
+		transfer.TotalAmount = totalAmount
+		transfer.Status = warehouseModel.TransferStatusShipped
+		transfer.ShippedAt = &now
+		transfer.UpdatedAt = now
+
+		return s.transferRepo.Update(tx, transfer)
+	})
+}
+
+func (s *WarehouseService) ReceiveTransfer(ctx context.Context, transferID int64) error {
+	return s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
+		transfer, err := s.transferRepo.FindByIDForUpdate(tx, transferID)
+		if err != nil {
+			if stdErrors.Is(err, gorm.ErrRecordNotFound) {
+				return errors.New(40010, 404, "调拨单不存在")
+			}
+			return err
+		}
+		if transfer.Status != warehouseModel.TransferStatusShipped {
+			return errors.New(40012, 400, "仅在途状态的调拨单可收货")
+		}
+
+		now := time.Now()
+		for _, item := range transfer.Items {
+			toLocID := int64(0)
+			if item.ToLocationID != nil {
+				toLocID = *item.ToLocationID
+			}
+			// 调入入库：沿用调出时确定的 UnitCost，保持跨仓成本传递与一致性
+			_, err := s.ApplyInboundTx(ctx, tx, dto.MoveInput{
+				MaterialID:  item.MaterialID,
+				WarehouseID: transfer.ToWarehouseID,
+				LocationID:  toLocID,
+				Qty:         item.Qty,
+				UnitCost:    item.UnitCost,
+				BizType:     BizTypeLocationTransfer,
+				BizNo:       transfer.TransferNo,
+			})
+			if err != nil {
+				return err
+			}
+			item.ReceivedQty = item.Qty
+			if err := s.transferRepo.UpdateItem(tx, item); err != nil {
+				return err
+			}
+		}
+
+		transfer.Status = warehouseModel.TransferStatusCompleted
+		transfer.ReceivedAt = &now
+		transfer.UpdatedAt = now
+
+		return s.transferRepo.Update(tx, transfer)
+	})
+}
+
+func (s *WarehouseService) CancelTransfer(ctx context.Context, transferID int64) error {
+	return s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
+		transfer, err := s.transferRepo.FindByIDForUpdate(tx, transferID)
+		if err != nil {
+			if stdErrors.Is(err, gorm.ErrRecordNotFound) {
+				return errors.New(40010, 404, "调拨单不存在")
+			}
+			return err
+		}
+		if transfer.Status == warehouseModel.TransferStatusShipped || transfer.Status == warehouseModel.TransferStatusCompleted {
+			return errors.New(40013, 400, "在途或已完成的调拨单不能取消")
+		}
+		transfer.Status = warehouseModel.TransferStatusCancelled
+		transfer.UpdatedAt = time.Now()
+		return s.transferRepo.Update(tx, transfer)
+	})
+}
+
+func (s *WarehouseService) GetTransfer(ctx context.Context, id int64) (*warehouseModel.InvTransfer, error) {
+	transfer, err := s.transferRepo.FindByID(id)
+	if err != nil {
+		if stdErrors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.New(40010, 404, "调拨单不存在")
+		}
+		return nil, err
+	}
+	return transfer, nil
+}
+
+func (s *WarehouseService) ListTransfers(ctx context.Context, req dto.TransferQuery) ([]*warehouseModel.InvTransfer, int64, error) {
+	return s.transferRepo.List(req.FromWarehouseID, req.ToWarehouseID, req.Status, req.TransferNo, req.Page, req.PageSize)
+}
+
