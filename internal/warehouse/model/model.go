@@ -119,3 +119,47 @@ func (InvStockCheckItem) TableName() string { return "inv_stock_check_item" }
 func (InvTransfer) TableName() string       { return "inv_transfer" }
 func (InvTransferItem) TableName() string   { return "inv_transfer_item" }
 
+// 序列号状态常量
+const (
+	SerialStatusInStock  int16 = 1 // 在库
+	SerialStatusSold     int16 = 2 // 已售
+	SerialStatusRepair   int16 = 3 // 在修
+	SerialStatusScrapped int16 = 4 // 报废
+)
+
+type InvBatch struct {
+	ID           int64           `json:"id"`
+	BatchNo      string          `json:"batch_no"`
+	MaterialID   int64           `json:"material_id"`
+	ProducedAt   *time.Time      `json:"produced_at"`
+	ExpiredAt    *time.Time      `json:"expired_at"`
+	SupplierID   *int64          `json:"supplier_id"`
+	InboundNo    string          `json:"inbound_no"`
+	QtyIn        decimal.Decimal `json:"qty_in"`
+	QtyRemaining decimal.Decimal `json:"qty_remaining"`
+	TenantID     int64           `json:"tenant_id"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
+	DeletedAt    *time.Time      `json:"-" gorm:"index"`
+}
+
+type InvSerial struct {
+	ID          int64      `json:"id"`
+	SerialNo    string     `json:"serial_no"`
+	MaterialID  int64      `json:"material_id"`
+	BatchID     *int64     `json:"batch_id"`
+	Status      int16      `json:"status"`
+	WarehouseID *int64     `json:"warehouse_id"`
+	LocationID  *int64     `json:"location_id"`
+	InboundNo   string     `json:"inbound_no"`
+	OutboundNo  string     `json:"outbound_no"`
+	TenantID    int64      `json:"tenant_id"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	DeletedAt   *time.Time `json:"-" gorm:"index"`
+}
+
+func (InvBatch) TableName() string  { return "inv_batch" }
+func (InvSerial) TableName() string { return "inv_serial" }
+
+

@@ -547,3 +547,107 @@ func TestStockTransfer_RejectsInsufficientStock(t *testing.T) {
 	}
 }
 
+// P2 §3.4: 批次全流程——创建多个不同效期的批次 -> FEFO(先到期先出)精准推荐与数量分摊
+func TestBatch_Create_FEFO_Recommendation(t *testing.T) {
+	gdb := testsupport.NewDB(t)
+	fx := testsupport.CreateFixture(t, gdb, "batch1")
+	svc := testsupport.NewWarehouseService(gdb)
+	ctx := testsupport.Ctx()
+
+	exp1 := "2026-11-01"
+	exp2 := "2026-12-01"
+	exp3 := "2026-10-15" // 最早到期
+
+	// 批次 1: 10 个，11月到期
+	_, err := svc.CreateBatch(ctx, warehouseDto.CreateBatchReq{
+		BatchNo:    "BAT-202611-001",
+		MaterialID: fx.Material.ID,
+		ExpiredAt:  &exp1,
+		QtyIn:      testsupport.D("10"),
+	}, 0)
+	if err != nil {
+		t.Fatalf("创建批次1失败: %v", err)
+	}
+
+	// 批次 2: 20 个，12月到期
+	_, err = svc.CreateBatch(ctx, warehouseDto.CreateBatchReq{
+		BatchNo:    "BAT-202612-001",
+		MaterialID: fx.Material.ID,
+		ExpiredAt:  &exp2,
+		QtyIn:      testsupport.D("20"),
+	}, 0)
+	if err != nil {
+		t.Fatalf("创建批次2失败: %v", err)
+	}
+
+	// 批次 3: 5 个，10月到期（应优先出）
+	_, err = svc.CreateBatch(ctx, warehouseDto.CreateBatchReq{
+		BatchNo:    "BAT-202610-001",
+		MaterialID: fx.Material.ID,
+		ExpiredAt:  &exp3,
+		QtyIn:      testsupport.D("5"),
+	}, 0)
+	if err != nil {
+		t.Fatalf("创建批次3失败: %v", err)
+	}
+
+	// 请求出库 12 个：期望推荐 批次3(5个全部) + 批次1(7个)
+	items, err := svc.RecommendFEFO(ctx, warehouseDto.FEFORecommendReq{
+		MaterialID:  fx.Material.ID,
+		RequiredQty: testsupport.D("12"),
+	})
+	if err != nil {
+		t.Fatalf("FEFO推荐失败: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("期望推荐 2 个批次，实际推荐 %d 个: %+v", len(items), items)
+	}
+	if items[0].BatchNo != "BAT-202610-001" || !items[0].AllocatedQty.Equal(testsupport.D("5")) {
+		t.Fatalf("首推荐批次错误: %+v", items[0])
+	}
+	if items[1].BatchNo != "BAT-202611-001" || !items[1].AllocatedQty.Equal(testsupport.D("7")) {
+		t.Fatalf("次推荐批次错误: %+v", items[1])
+	}
+}
+
+// P2 §3.4: 序列号录入与状态流转（在库 -> 已售 -> 在修 -> 报废）
+func TestSerial_Create_Status_Transition(t *testing.T) {
+	gdb := testsupport.NewDB(t)
+	fx := testsupport.CreateFixture(t, gdb, "sn1")
+	svc := testsupport.NewWarehouseService(gdb)
+	ctx := testsupport.Ctx()
+
+	// 录入一批序列号
+	serials, err := svc.CreateSerials(ctx, warehouseDto.CreateSerialReq{
+		SerialNos:   []string{"SN-2026-0001", "SN-2026-0002"},
+		MaterialID:  fx.Material.ID,
+		WarehouseID: &fx.Warehouse.ID,
+		LocationID:  &fx.Location.ID,
+		InboundNo:   "IB-SN-001",
+	}, 0)
+	if err != nil {
+		t.Fatalf("批量录入序列号失败: %v", err)
+	}
+	if len(serials) != 2 || serials[0].Status != warehouseModel.SerialStatusInStock {
+		t.Fatalf("序列号初始状态错误: %+v", serials)
+	}
+
+	// 流转为已售
+	err = svc.UpdateSerialStatus(ctx, serials[0].ID, warehouseDto.UpdateSerialStatusReq{
+		Status:     warehouseModel.SerialStatusSold,
+		OutboundNo: "OB-SN-001",
+	})
+	if err != nil {
+		t.Fatalf("更新序列号状态失败: %v", err)
+	}
+
+	sn, err := svc.GetSerial(ctx, serials[0].ID)
+	if err != nil {
+		t.Fatalf("获取序列号失败: %v", err)
+	}
+	if sn.Status != warehouseModel.SerialStatusSold || sn.OutboundNo != "OB-SN-001" {
+		t.Fatalf("序列号流转结果错误: %+v", sn)
+	}
+}
+
+

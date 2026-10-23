@@ -309,6 +309,8 @@ func NewWarehouseService(gdb *gorm.DB) *warehouseService.WarehouseService {
 	)
 	svc.SetStockCheckRepository(warehouseRepo.NewStockCheckRepository(gdb))
 	svc.SetTransferRepository(warehouseRepo.NewTransferRepository(gdb))
+	svc.SetBatchRepository(warehouseRepo.NewBatchRepository(gdb))
+	svc.SetSerialRepository(warehouseRepo.NewSerialRepository(gdb))
 	return svc
 }
 

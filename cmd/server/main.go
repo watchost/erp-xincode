@@ -159,6 +159,8 @@ func main() {
 	warehouseLedgerRepo := warehouseRepository.NewStockLedgerRepository(dbConn)
 	warehouseCheckRepo := warehouseRepository.NewStockCheckRepository(dbConn)
 	warehouseTransferRepo := warehouseRepository.NewTransferRepository(dbConn)
+	warehouseBatchRepo := warehouseRepository.NewBatchRepository(dbConn)
+	warehouseSerialRepo := warehouseRepository.NewSerialRepository(dbConn)
 	warehouseSvc := warehouseService.NewWarehouseService(
 		txManager, warehouseInvRepo, warehouseLedgerRepo,
 		mdmMaterialRepo, mdmWarehouseRepo, mdmLocationRepo,
@@ -166,6 +168,8 @@ func main() {
 	)
 	warehouseSvc.SetStockCheckRepository(warehouseCheckRepo)
 	warehouseSvc.SetTransferRepository(warehouseTransferRepo)
+	warehouseSvc.SetBatchRepository(warehouseBatchRepo)
+	warehouseSvc.SetSerialRepository(warehouseSerialRepo)
 	warehouseH := warehouseHandler.NewWarehouseHandler(warehouseSvc)
 
 	// 财务模块：采购入库/生产领退料需在同事务内过账，故先于采购/生产构建，

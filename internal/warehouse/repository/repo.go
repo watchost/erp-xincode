@@ -57,6 +57,25 @@ type TransferRepository interface {
 	FindItemsByTransferID(transferID int64) ([]*model.InvTransferItem, error)
 }
 
+type BatchRepository interface {
+	Create(tx *gorm.DB, batch *model.InvBatch) error
+	Update(tx *gorm.DB, batch *model.InvBatch) error
+	FindByID(id int64) (*model.InvBatch, error)
+	FindByNo(batchNo string, materialID int64) (*model.InvBatch, error)
+	List(materialID int64, batchNo string, page, pageSize int) ([]*model.InvBatch, int64, error)
+	ListAvailableFEFO(materialID int64) ([]*model.InvBatch, error)
+	DeductQty(tx *gorm.DB, batchID int64, qty decimal.Decimal) error
+}
+
+type SerialRepository interface {
+	CreateBatch(tx *gorm.DB, serials []*model.InvSerial) error
+	Update(tx *gorm.DB, serial *model.InvSerial) error
+	FindByID(id int64) (*model.InvSerial, error)
+	FindByNo(serialNo string, materialID int64) (*model.InvSerial, error)
+	List(materialID int64, serialNo string, status int16, page, pageSize int) ([]*model.InvSerial, int64, error)
+}
+
+
 type inventoryRepo struct {
 	db *gorm.DB
 }
@@ -427,4 +446,165 @@ func (r *transferRepo) FindItemsByTransferID(transferID int64) ([]*model.InvTran
 	}
 	return items, nil
 }
+
+type batchRepo struct {
+	db *gorm.DB
+}
+
+func NewBatchRepository(db *gorm.DB) BatchRepository {
+	return &batchRepo{db: db}
+}
+
+func (r *batchRepo) Create(tx *gorm.DB, batch *model.InvBatch) error {
+	db := r.db
+	if tx != nil {
+		db = tx
+	}
+	return db.Create(batch).Error
+}
+
+func (r *batchRepo) Update(tx *gorm.DB, batch *model.InvBatch) error {
+	db := r.db
+	if tx != nil {
+		db = tx
+	}
+	return db.Save(batch).Error
+}
+
+func (r *batchRepo) FindByID(id int64) (*model.InvBatch, error) {
+	var batch model.InvBatch
+	if err := r.db.Where("id = ?", id).First(&batch).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, gorm.ErrRecordNotFound
+		}
+		return nil, err
+	}
+	return &batch, nil
+}
+
+func (r *batchRepo) FindByNo(batchNo string, materialID int64) (*model.InvBatch, error) {
+	var batch model.InvBatch
+	if err := r.db.Where("batch_no = ? AND material_id = ?", batchNo, materialID).First(&batch).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, gorm.ErrRecordNotFound
+		}
+		return nil, err
+	}
+	return &batch, nil
+}
+
+func (r *batchRepo) List(materialID int64, batchNo string, page, pageSize int) ([]*model.InvBatch, int64, error) {
+	var list []*model.InvBatch
+	var total int64
+	q := r.db.Model(&model.InvBatch{})
+	if materialID > 0 {
+		q = q.Where("material_id = ?", materialID)
+	}
+	if batchNo != "" {
+		q = q.Where("batch_no LIKE ?", "%"+batchNo+"%")
+	}
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if err := q.Order("created_at DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&list).Error; err != nil {
+		return nil, 0, err
+	}
+	return list, total, nil
+}
+
+func (r *batchRepo) ListAvailableFEFO(materialID int64) ([]*model.InvBatch, error) {
+	var list []*model.InvBatch
+	err := r.db.Where("material_id = ? AND qty_remaining > 0", materialID).
+		Order("expired_at ASC NULLS LAST, created_at ASC").
+		Find(&list).Error
+	if err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+func (r *batchRepo) DeductQty(tx *gorm.DB, batchID int64, qty decimal.Decimal) error {
+	res := tx.Model(&model.InvBatch{}).
+		Where("id = ? AND qty_remaining >= ?", batchID, qty).
+		Update("qty_remaining", gorm.Expr("qty_remaining - ?", qty))
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return errors.New("批次余量不足")
+	}
+	return nil
+}
+
+type serialRepo struct {
+	db *gorm.DB
+}
+
+func NewSerialRepository(db *gorm.DB) SerialRepository {
+	return &serialRepo{db: db}
+}
+
+func (r *serialRepo) CreateBatch(tx *gorm.DB, serials []*model.InvSerial) error {
+	if len(serials) == 0 {
+		return nil
+	}
+	db := r.db
+	if tx != nil {
+		db = tx
+	}
+	return db.Create(&serials).Error
+}
+
+func (r *serialRepo) Update(tx *gorm.DB, serial *model.InvSerial) error {
+	db := r.db
+	if tx != nil {
+		db = tx
+	}
+	return db.Save(serial).Error
+}
+
+func (r *serialRepo) FindByID(id int64) (*model.InvSerial, error) {
+	var serial model.InvSerial
+	if err := r.db.Where("id = ?", id).First(&serial).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, gorm.ErrRecordNotFound
+		}
+		return nil, err
+	}
+	return &serial, nil
+}
+
+func (r *serialRepo) FindByNo(serialNo string, materialID int64) (*model.InvSerial, error) {
+	var serial model.InvSerial
+	if err := r.db.Where("serial_no = ? AND material_id = ?", serialNo, materialID).First(&serial).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, gorm.ErrRecordNotFound
+		}
+		return nil, err
+	}
+	return &serial, nil
+}
+
+func (r *serialRepo) List(materialID int64, serialNo string, status int16, page, pageSize int) ([]*model.InvSerial, int64, error) {
+	var list []*model.InvSerial
+	var total int64
+	q := r.db.Model(&model.InvSerial{})
+	if materialID > 0 {
+		q = q.Where("material_id = ?", materialID)
+	}
+	if serialNo != "" {
+		q = q.Where("serial_no LIKE ?", "%"+serialNo+"%")
+	}
+	if status > 0 {
+		q = q.Where("status = ?", status)
+	}
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if err := q.Order("created_at DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&list).Error; err != nil {
+		return nil, 0, err
+	}
+	return list, total, nil
+}
+
 

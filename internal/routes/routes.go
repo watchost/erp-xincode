@@ -43,6 +43,12 @@ const (
 	PermWarehouseTransferReceive = "warehouse:transfer:receive"
 	PermWarehouseTransferCancel  = "warehouse:transfer:cancel"
 
+	PermWarehouseBatchView    = "warehouse:batch:view"
+	PermWarehouseBatchCreate  = "warehouse:batch:create"
+	PermWarehouseSerialView   = "warehouse:serial:view"
+	PermWarehouseSerialCreate = "warehouse:serial:create"
+	PermWarehouseSerialUpdate = "warehouse:serial:update"
+
 	PermPurchaseOrderView    = "purchase:order:view"
 	PermPurchaseOrderCreate  = "purchase:order:create"
 	PermPurchaseOrderApprove = "purchase:order:approve"
@@ -262,6 +268,18 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 			warehouse.POST("/transfers/:id/ship", middleware.RequirePermission(PermWarehouseTransferShip), d.Warehouse.ShipTransfer)
 			warehouse.POST("/transfers/:id/receive", middleware.RequirePermission(PermWarehouseTransferReceive), d.Warehouse.ReceiveTransfer)
 			warehouse.POST("/transfers/:id/cancel", middleware.RequirePermission(PermWarehouseTransferCancel), d.Warehouse.CancelTransfer)
+
+			// 批次
+			warehouse.POST("/batches", middleware.RequirePermission(PermWarehouseBatchCreate), d.Warehouse.CreateBatch)
+			warehouse.GET("/batches", middleware.RequirePermission(PermWarehouseBatchView), d.Warehouse.ListBatches)
+			warehouse.GET("/batches/:id", middleware.RequirePermission(PermWarehouseBatchView), d.Warehouse.GetBatch)
+			warehouse.POST("/batches/recommend-fefo", middleware.RequirePermission(PermWarehouseBatchView), d.Warehouse.RecommendFEFO)
+
+			// 序列号
+			warehouse.POST("/serials", middleware.RequirePermission(PermWarehouseSerialCreate), d.Warehouse.CreateSerials)
+			warehouse.GET("/serials", middleware.RequirePermission(PermWarehouseSerialView), d.Warehouse.ListSerials)
+			warehouse.GET("/serials/:id", middleware.RequirePermission(PermWarehouseSerialView), d.Warehouse.GetSerial)
+			warehouse.PUT("/serials/:id/status", middleware.RequirePermission(PermWarehouseSerialUpdate), d.Warehouse.UpdateSerialStatus)
 		}
 
 		purchase := api.Group("/purchase")

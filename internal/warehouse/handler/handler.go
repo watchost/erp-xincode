@@ -296,6 +296,133 @@ func (h *WarehouseHandler) ListTransfers(c *gin.Context) {
 	response.PageSuccess(c, list, total, req.Page, req.PageSize)
 }
 
+// ----------------- P2 §3.4 批次与序列号 Handler -----------------
+
+func (h *WarehouseHandler) CreateBatch(c *gin.Context) {
+	var req dto.CreateBatchReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+	tenantID := int64(0)
+	res, err := h.warehouseService.CreateBatch(c.Request.Context(), req, tenantID)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.Success(c, res)
+}
+
+func (h *WarehouseHandler) GetBatch(c *gin.Context) {
+	var uri struct {
+		ID int64 `uri:"id" binding:"required"`
+	}
+	if err := c.ShouldBindUri(&uri); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+	res, err := h.warehouseService.GetBatch(c.Request.Context(), uri.ID)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.Success(c, res)
+}
+
+func (h *WarehouseHandler) ListBatches(c *gin.Context) {
+	var req dto.BatchQuery
+	if err := c.ShouldBindQuery(&req); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+	list, total, err := h.warehouseService.ListBatches(c.Request.Context(), req)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.PageSuccess(c, list, total, req.Page, req.PageSize)
+}
+
+func (h *WarehouseHandler) RecommendFEFO(c *gin.Context) {
+	var req dto.FEFORecommendReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+	items, err := h.warehouseService.RecommendFEFO(c.Request.Context(), req)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.Success(c, items)
+}
+
+func (h *WarehouseHandler) CreateSerials(c *gin.Context) {
+	var req dto.CreateSerialReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+	tenantID := int64(0)
+	res, err := h.warehouseService.CreateSerials(c.Request.Context(), req, tenantID)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.Success(c, res)
+}
+
+func (h *WarehouseHandler) UpdateSerialStatus(c *gin.Context) {
+	var uri struct {
+		ID int64 `uri:"id" binding:"required"`
+	}
+	if err := c.ShouldBindUri(&uri); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+	var req dto.UpdateSerialStatusReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+	if err := h.warehouseService.UpdateSerialStatus(c.Request.Context(), uri.ID, req); err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.Success(c, gin.H{"message": "序列号状态更新成功"})
+}
+
+func (h *WarehouseHandler) GetSerial(c *gin.Context) {
+	var uri struct {
+		ID int64 `uri:"id" binding:"required"`
+	}
+	if err := c.ShouldBindUri(&uri); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+	res, err := h.warehouseService.GetSerial(c.Request.Context(), uri.ID)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.Success(c, res)
+}
+
+func (h *WarehouseHandler) ListSerials(c *gin.Context) {
+	var req dto.SerialQuery
+	if err := c.ShouldBindQuery(&req); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+	list, total, err := h.warehouseService.ListSerials(c.Request.Context(), req)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.PageSuccess(c, list, total, req.Page, req.PageSize)
+}
+
+
 // 写入类接口应带 Idempotency-Key；未带时服务端不强制（可由路由/网关层要求）。
 func idempotencyKey(c *gin.Context) string {
 	if v := c.GetHeader("Idempotency-Key"); v != "" {

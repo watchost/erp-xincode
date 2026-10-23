@@ -164,3 +164,58 @@ type TransferQuery struct {
 	PageSize        int    `form:"page_size" binding:"required,min=1,max=100"`
 }
 
+// 批次相关 DTO
+type CreateBatchReq struct {
+	BatchNo    string          `json:"batch_no" binding:"required"`
+	MaterialID int64           `json:"material_id" binding:"required"`
+	ProducedAt *string         `json:"produced_at"`
+	ExpiredAt  *string         `json:"expired_at"`
+	SupplierID *int64          `json:"supplier_id"`
+	InboundNo  string          `json:"inbound_no"`
+	QtyIn      decimal.Decimal `json:"qty_in" binding:"decgt=0"`
+}
+
+type BatchQuery struct {
+	MaterialID int64  `form:"material_id"`
+	BatchNo    string `form:"batch_no"`
+	Page       int    `form:"page" binding:"required,min=1"`
+	PageSize   int    `form:"page_size" binding:"required,min=1,max=100"`
+}
+
+type FEFORecommendReq struct {
+	MaterialID  int64           `json:"material_id" binding:"required"`
+	RequiredQty decimal.Decimal `json:"required_qty" binding:"decgt=0"`
+}
+
+type FEFORecommendItem struct {
+	BatchID      int64           `json:"batch_id"`
+	BatchNo      string          `json:"batch_no"`
+	ExpiredAt    *string         `json:"expired_at"`
+	QtyRemaining decimal.Decimal `json:"qty_remaining"`
+	AllocatedQty decimal.Decimal `json:"allocated_qty"`
+}
+
+// 序列号相关 DTO
+type CreateSerialReq struct {
+	SerialNos   []string `json:"serial_nos" binding:"required,min=1"`
+	MaterialID  int64    `json:"material_id" binding:"required"`
+	BatchID     *int64   `json:"batch_id"`
+	WarehouseID *int64   `json:"warehouse_id"`
+	LocationID  *int64   `json:"location_id"`
+	InboundNo   string   `json:"inbound_no"`
+}
+
+type UpdateSerialStatusReq struct {
+	Status     int16  `json:"status" binding:"required,min=1,max=4"`
+	OutboundNo string `json:"outbound_no"`
+}
+
+type SerialQuery struct {
+	MaterialID int64  `form:"material_id"`
+	SerialNo   string `form:"serial_no"`
+	Status     int16  `form:"status"`
+	Page       int    `form:"page" binding:"required,min=1"`
+	PageSize   int    `form:"page_size" binding:"required,min=1,max=100"`
+}
+
+

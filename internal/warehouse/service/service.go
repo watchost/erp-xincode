@@ -48,6 +48,8 @@ type WarehouseService struct {
 	ledgerRepo      repository.StockLedgerRepository
 	stockCheckRepo  repository.StockCheckRepository
 	transferRepo    repository.TransferRepository
+	batchRepo       repository.BatchRepository
+	serialRepo      repository.SerialRepository
 	materialRepo    mdmRepo.MaterialRepository
 	warehouseRepo   mdmRepo.WarehouseRepository
 	locationRepo    mdmRepo.LocationRepository
@@ -84,6 +86,14 @@ func (s *WarehouseService) SetStockCheckRepository(r repository.StockCheckReposi
 
 func (s *WarehouseService) SetTransferRepository(r repository.TransferRepository) {
 	s.transferRepo = r
+}
+
+func (s *WarehouseService) SetBatchRepository(r repository.BatchRepository) {
+	s.batchRepo = r
+}
+
+func (s *WarehouseService) SetSerialRepository(r repository.SerialRepository) {
+	s.serialRepo = r
 }
 
 func (s *WarehouseService) SetFinance(f FinancePoster) {
@@ -970,4 +980,160 @@ func (s *WarehouseService) GetTransfer(ctx context.Context, id int64) (*warehous
 func (s *WarehouseService) ListTransfers(ctx context.Context, req dto.TransferQuery) ([]*warehouseModel.InvTransfer, int64, error) {
 	return s.transferRepo.List(req.FromWarehouseID, req.ToWarehouseID, req.Status, req.TransferNo, req.Page, req.PageSize)
 }
+
+// ----------------- P2 §3.4 批次与序列号核心业务实现 -----------------
+
+func (s *WarehouseService) CreateBatch(ctx context.Context, req dto.CreateBatchReq, tenantID int64) (*warehouseModel.InvBatch, error) {
+	if _, err := s.materialRepo.FindByID(req.MaterialID); err != nil {
+		return nil, errors.New(30002, 404, "物料不存在")
+	}
+	existing, _ := s.batchRepo.FindByNo(req.BatchNo, req.MaterialID)
+	if existing != nil {
+		return nil, errors.New(40020, 400, "该物料下已存在相同批次号")
+	}
+
+	var producedAt, expiredAt *time.Time
+	if req.ProducedAt != nil && *req.ProducedAt != "" {
+		if t, err := time.Parse("2006-01-02", *req.ProducedAt); err == nil {
+			producedAt = &t
+		}
+	}
+	if req.ExpiredAt != nil && *req.ExpiredAt != "" {
+		if t, err := time.Parse("2006-01-02", *req.ExpiredAt); err == nil {
+			expiredAt = &t
+		}
+	}
+
+	qtyIn := decimalx.Qty(req.QtyIn)
+	batch := &warehouseModel.InvBatch{
+		BatchNo:      req.BatchNo,
+		MaterialID:   req.MaterialID,
+		ProducedAt:   producedAt,
+		ExpiredAt:    expiredAt,
+		SupplierID:   req.SupplierID,
+		InboundNo:    req.InboundNo,
+		QtyIn:        qtyIn,
+		QtyRemaining: qtyIn,
+		TenantID:     tenantID,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+
+	if err := s.batchRepo.Create(nil, batch); err != nil {
+		return nil, err
+	}
+	return batch, nil
+}
+
+func (s *WarehouseService) GetBatch(ctx context.Context, id int64) (*warehouseModel.InvBatch, error) {
+	batch, err := s.batchRepo.FindByID(id)
+	if err != nil {
+		if stdErrors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.New(40021, 404, "批次不存在")
+		}
+		return nil, err
+	}
+	return batch, nil
+}
+
+func (s *WarehouseService) ListBatches(ctx context.Context, req dto.BatchQuery) ([]*warehouseModel.InvBatch, int64, error) {
+	return s.batchRepo.List(req.MaterialID, req.BatchNo, req.Page, req.PageSize)
+}
+
+func (s *WarehouseService) RecommendFEFO(ctx context.Context, req dto.FEFORecommendReq) ([]dto.FEFORecommendItem, error) {
+	batches, err := s.batchRepo.ListAvailableFEFO(req.MaterialID)
+	if err != nil {
+		return nil, err
+	}
+
+	remainingNeeded := decimalx.Qty(req.RequiredQty)
+	var items []dto.FEFORecommendItem
+
+	for _, b := range batches {
+		if remainingNeeded.LessThanOrEqual(decimal.Zero) {
+			break
+		}
+		allocated := decimal.Min(b.QtyRemaining, remainingNeeded)
+		remainingNeeded = remainingNeeded.Sub(allocated)
+
+		var expStr *string
+		if b.ExpiredAt != nil {
+			s := b.ExpiredAt.Format("2006-01-02")
+			expStr = &s
+		}
+
+		items = append(items, dto.FEFORecommendItem{
+			BatchID:      b.ID,
+			BatchNo:      b.BatchNo,
+			ExpiredAt:    expStr,
+			QtyRemaining: b.QtyRemaining,
+			AllocatedQty: allocated,
+		})
+	}
+
+	return items, nil
+}
+
+func (s *WarehouseService) CreateSerials(ctx context.Context, req dto.CreateSerialReq, tenantID int64) ([]*warehouseModel.InvSerial, error) {
+	if _, err := s.materialRepo.FindByID(req.MaterialID); err != nil {
+		return nil, errors.New(30002, 404, "物料不存在")
+	}
+
+	var serials []*warehouseModel.InvSerial
+	now := time.Now()
+	for _, sn := range req.SerialNos {
+		if sn == "" {
+			continue
+		}
+		serials = append(serials, &warehouseModel.InvSerial{
+			SerialNo:    sn,
+			MaterialID:  req.MaterialID,
+			BatchID:     req.BatchID,
+			Status:      warehouseModel.SerialStatusInStock,
+			WarehouseID: req.WarehouseID,
+			LocationID:  req.LocationID,
+			InboundNo:   req.InboundNo,
+			TenantID:    tenantID,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		})
+	}
+
+	if err := s.serialRepo.CreateBatch(nil, serials); err != nil {
+		return nil, err
+	}
+	return serials, nil
+}
+
+func (s *WarehouseService) UpdateSerialStatus(ctx context.Context, id int64, req dto.UpdateSerialStatusReq) error {
+	serial, err := s.serialRepo.FindByID(id)
+	if err != nil {
+		if stdErrors.Is(err, gorm.ErrRecordNotFound) {
+			return errors.New(40022, 404, "序列号不存在")
+		}
+		return err
+	}
+	serial.Status = req.Status
+	if req.OutboundNo != "" {
+		serial.OutboundNo = req.OutboundNo
+	}
+	serial.UpdatedAt = time.Now()
+	return s.serialRepo.Update(nil, serial)
+}
+
+func (s *WarehouseService) GetSerial(ctx context.Context, id int64) (*warehouseModel.InvSerial, error) {
+	serial, err := s.serialRepo.FindByID(id)
+	if err != nil {
+		if stdErrors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.New(40022, 404, "序列号不存在")
+		}
+		return nil, err
+	}
+	return serial, nil
+}
+
+func (s *WarehouseService) ListSerials(ctx context.Context, req dto.SerialQuery) ([]*warehouseModel.InvSerial, int64, error) {
+	return s.serialRepo.List(req.MaterialID, req.SerialNo, req.Status, req.Page, req.PageSize)
+}
+
 
