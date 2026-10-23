@@ -190,16 +190,25 @@ func (s *FinanceService) GetFinancialReport(ctx context.Context, period string) 
 	}
 	totalLiabilities := liabilityNet.Neg() // 负债为贷方余额
 
-	// 利润表（本月期间发生额）
-	revenueNet, err := s.accountEntryRepo.SumBalance("60", &periodFrom, &periodTo)
-	if err != nil {
+	// 利润表（本月期间发生额）：排除期末结转凭证——结转分录会把
+	// 60/64 科目本期发生对冲清零，期间数必须取流量口径（P1.5 H3）。
+	revenueNet := decimal.Zero
+	if rows, err := s.accountEntryRepo.SumFlowByAccount("60", &periodFrom, &periodTo); err != nil {
 		return nil, err
+	} else {
+		for _, r := range rows {
+			revenueNet = revenueNet.Add(r.Net)
+		}
 	}
 	totalRevenue := revenueNet.Neg() // 收入为贷方发生
 
-	totalCost, err := s.accountEntryRepo.SumBalance("64", &periodFrom, &periodTo)
-	if err != nil {
+	totalCost := decimal.Zero
+	if rows, err := s.accountEntryRepo.SumFlowByAccount("64", &periodFrom, &periodTo); err != nil {
 		return nil, err
+	} else {
+		for _, r := range rows {
+			totalCost = totalCost.Add(r.Net)
+		}
 	}
 
 	grossProfit := totalRevenue.Sub(totalCost)

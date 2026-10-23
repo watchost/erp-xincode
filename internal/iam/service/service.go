@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,7 +42,7 @@ const (
 type AuthService interface {
 	Login(ctx context.Context, req dto.LoginReq) (dto.LoginRes, error)
 	RefreshToken(ctx context.Context, refreshToken string) (dto.LoginRes, error)
-	Logout(ctx context.Context, jti string, accessExpire time.Duration) error
+	Logout(ctx context.Context, userID int64, jti string, accessExpire time.Duration) error
 	ChangePassword(ctx context.Context, userID int64, req dto.ChangePasswordReq) error
 	GetUserByID(ctx context.Context, userID int64) (*model.SysUser, error)
 	GetUserPermissions(ctx context.Context, userID int64) ([]string, error)
@@ -183,8 +184,19 @@ func (s *IAMService) issueTokens(ctx context.Context, user *model.SysUser) (dto.
 
 	refreshToken := uuid.NewString()
 	refreshKey := "refresh:" + refreshToken
-	if err := s.kv.Set(ctx, refreshKey, user.ID, int(s.refreshExpire.Seconds())); err != nil {
+	// 值携带签发时间戳（userID|issuedAtUnix）：改密/重置/登出写入的吊销时间戳
+	// 据此判定旧 refresh token 是否仍然有效（P1.5 H1）。
+	refreshVal := fmt.Sprintf("%d|%d", user.ID, time.Now().Unix())
+	if err := s.kv.Set(ctx, refreshKey, refreshVal, int(s.refreshExpire.Seconds())); err != nil {
 		return dto.LoginRes{}, errors.Wrap(err, 10300, 500, "存储refresh token失败")
+	}
+
+	// P1.5 H2：每次签发（登录与 refresh 换发都经过这里）以 DB 标志为准同步
+	// 强制改密标记，真标记与 refresh 会话同寿命，杜绝「refresh 一次永久绕过」。
+	if user.MustChangePwd {
+		_ = s.kv.Set(ctx, mustChangeKey(user.ID), "1", int(s.refreshExpire.Seconds()))
+	} else {
+		_ = s.kv.Set(ctx, mustChangeKey(user.ID), "0", int(s.accessExpire.Seconds()))
 	}
 
 	return dto.LoginRes{

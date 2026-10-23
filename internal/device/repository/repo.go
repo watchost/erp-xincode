@@ -25,6 +25,10 @@ type DeviceMessageRepository interface {
 	Update(msg *model.DevDeviceMessage) error
 	FindByMessageID(messageID string) (*model.DevDeviceMessage, error)
 	ListByDevice(deviceID int64, direction int, page, pageSize int) ([]model.DevDeviceMessage, int64, error)
+	// MarkAckedIfPending 仅当消息归属 deviceID 且仍处于待确认（status=0）时
+	// 推进到终态（成功/失败）。命中返回 true。P1.5 S3+H8：串台/伪造 ack 与
+	// 迟到 ack 都不能改写他人消息或翻转已定终态。
+	MarkAckedIfPending(messageID string, deviceID int64, status int, ackedAt time.Time) (bool, error)
 }
 
 type deviceRepo struct {
@@ -111,6 +115,17 @@ func (r *deviceMessageRepo) Create(msg *model.DevDeviceMessage) error {
 
 func (r *deviceMessageRepo) Update(msg *model.DevDeviceMessage) error {
 	return r.db.Save(msg).Error
+}
+
+// MarkAckedIfPending 条件更新：归属 + 待确认双守卫，单条 UPDATE 原子完成。
+func (r *deviceMessageRepo) MarkAckedIfPending(messageID string, deviceID int64, status int, ackedAt time.Time) (bool, error) {
+	res := r.db.Model(&model.DevDeviceMessage{}).
+		Where("message_id = ? AND device_id = ? AND status = ?", messageID, deviceID, model.MessageStatusPending).
+		Updates(map[string]any{"status": status, "acked_at": ackedAt})
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
 }
 
 func (r *deviceMessageRepo) FindByMessageID(messageID string) (*model.DevDeviceMessage, error) {

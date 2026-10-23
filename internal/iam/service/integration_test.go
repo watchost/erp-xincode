@@ -743,3 +743,140 @@ func deptIDByCode(t *testing.T, deps testsupport.IAMDeps, code string) int64 {
 	}
 	return id
 }
+
+// ---- P1.5 S6：内置 admin（id=1）仅本人可维护 ----
+
+func TestBuiltinAdminGuards(t *testing.T) {
+	_, deps, suffix := setup(t)
+
+	// 非 admin 调用方（普通 iam:user 持有者）
+	outsider := auth.WithUserID(context.Background(), 999)
+	if _, err := deps.Service.ResetPassword(outsider, 1, dto.ResetPasswordReq{}); appErrorCode(err) != 10006 {
+		t.Fatalf("非本人重置 admin 密码应返回 10006，实际 %v", err)
+	}
+	if err := deps.Service.UpdateUser(outsider, 1, dto.UpdateUserReq{Status: new(int)}); appErrorCode(err) != 10006 {
+		t.Fatalf("非本人停用 admin 应返回 10006，实际 %v", err)
+	}
+	if err := deps.Service.AssignUserRoles(outsider, 1, dto.AssignUserRolesReq{RoleIDs: []int64{}}); appErrorCode(err) != 10006 {
+		t.Fatalf("非本人剥 admin 角色应返回 10006，实际 %v", err)
+	}
+
+	// admin 本人可以维护自己（改名即可，不动密码/状态，避免污染其他用例）
+	self := auth.WithUserID(context.Background(), 1)
+	name := "系统管理员" + suffix
+	if err := deps.Service.UpdateUser(self, 1, dto.UpdateUserReq{RealName: &name}); err != nil {
+		t.Fatalf("admin 本人维护自己应成功: %v", err)
+	}
+	u, err := deps.Service.GetUser(self, 1)
+	if err != nil || u.RealName != name {
+		t.Fatalf("admin 改名未生效: %+v err=%v", u, err)
+	}
+	// 还原，避免影响其他用例的展示断言
+	orig := "系统管理员"
+	_ = deps.Service.UpdateUser(self, 1, dto.UpdateUserReq{RealName: &orig})
+}
+
+// ---- P1.5 H1：改密/登出后 refresh token 即刻失效 ----
+
+func TestRefreshRevokedAfterPasswordChange(t *testing.T) {
+	_, deps, suffix := setup(t)
+	username := "rfr" + suffix
+	if err := deps.Service.CreateUser(context.Background(), dto.CreateUserReq{
+		Username: username, Password: "Passw0rd!", RealName: "吊销测试", Status: 1,
+	}); err != nil {
+		t.Fatalf("创建用户失败: %v", err)
+	}
+	uid := mustUserID(t, deps, username)
+	_, login := loginAndCtx(t, deps, username, "Passw0rd!")
+
+	time.Sleep(1100 * time.Millisecond) // 吊销戳为秒级，跨过签发那一秒
+	if err := deps.Service.ChangePassword(context.Background(), uid, dto.ChangePasswordReq{
+		OldPassword: "Passw0rd!", NewPassword: "N3wP@ssw0rd",
+	}); err != nil {
+		t.Fatalf("改密失败: %v", err)
+	}
+
+	if _, err := deps.Service.RefreshToken(context.Background(), login.RefreshToken); appErrorCode(err) != 10002 {
+		t.Fatalf("改密前签发的 refresh token 应失效（10002），实际 %v", err)
+	}
+
+	// 新密码登录后 refresh 正常换发
+	_, newLogin := loginAndCtx(t, deps, username, "N3wP@ssw0rd")
+	if _, err := deps.Service.RefreshToken(context.Background(), newLogin.RefreshToken); err != nil {
+		t.Fatalf("新会话 refresh 应可用: %v", err)
+	}
+}
+
+func TestRefreshRevokedAfterLogout(t *testing.T) {
+	_, deps, suffix := setup(t)
+	username := "out" + suffix
+	if err := deps.Service.CreateUser(context.Background(), dto.CreateUserReq{
+		Username: username, Password: "Passw0rd!", RealName: "登出测试", Status: 1,
+	}); err != nil {
+		t.Fatalf("创建用户失败: %v", err)
+	}
+	ctx, login := loginAndCtx(t, deps, username, "Passw0rd!")
+	claims, err := auth.ParseToken(testsupport.IAMJWTSecret, login.AccessToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(1100 * time.Millisecond)
+	if err := deps.Service.Logout(ctx, claims.UserID, claims.JTI, 0); err != nil {
+		t.Fatalf("登出失败: %v", err)
+	}
+	// 当前 access 被拉黑
+	if deps.Service.CheckClaims(context.Background(), claims) {
+		t.Fatal("登出后当前 access token 应被拉黑")
+	}
+	// refresh 同样失效（登出 = 全端下线）
+	if _, err := deps.Service.RefreshToken(context.Background(), login.RefreshToken); appErrorCode(err) != 10002 {
+		t.Fatalf("登出后 refresh token 应失效（10002），实际 %v", err)
+	}
+}
+
+// ---- P1.5 H2：强制改密标记在 refresh 后仍然有效、Redis 丢失回源 DB ----
+
+func TestMustChangeFlagSurvivesRefresh(t *testing.T) {
+	_, deps, suffix := setup(t)
+	username := "mc" + suffix
+	if err := deps.Service.CreateUser(context.Background(), dto.CreateUserReq{
+		Username: username, Password: "Passw0rd!", RealName: "强制改密", MustChangePwd: true, Status: 1,
+	}); err != nil {
+		t.Fatalf("创建用户失败: %v", err)
+	}
+	uid := mustUserID(t, deps, username)
+
+	_, login := loginAndCtx(t, deps, username, "Passw0rd!")
+	// refresh 换发后标记必须仍在（旧实现 TTL=accessExpire，refresh 后永久丢失）
+	if _, err := deps.Service.RefreshToken(context.Background(), login.RefreshToken); err != nil {
+		t.Fatalf("refresh 换发失败: %v", err)
+	}
+	if !deps.Service.MustChangePassword(context.Background(), uid) {
+		t.Fatal("refresh 换发后强制改密标记应仍然有效")
+	}
+
+	// Redis 标记丢失（如缓存重启）时回源 DB 判定
+	_ = deps.KV.Del(context.Background(), "mustchg:"+fmt.Sprintf("%d", uid))
+	if !deps.Service.MustChangePassword(context.Background(), uid) {
+		t.Fatal("Redis 标记丢失时应回源 DB 命中强制改密")
+	}
+
+	// 普通用户负缓存：未命中→DB→回填"0"
+	_, login2 := loginAndCtx(t, deps, username, "Passw0rd!")
+	_ = login2
+	plain := "plain" + suffix
+	if err := deps.Service.CreateUser(context.Background(), dto.CreateUserReq{
+		Username: plain, Password: "Passw0rd!", RealName: "普通用户", Status: 1,
+	}); err != nil {
+		t.Fatalf("创建普通用户失败: %v", err)
+	}
+	plainID := mustUserID(t, deps, plain)
+	if deps.Service.MustChangePassword(context.Background(), plainID) {
+		t.Fatal("普通用户不应命中强制改密")
+	}
+	v, _ := deps.KV.Get(context.Background(), "mustchg:"+fmt.Sprintf("%d", plainID))
+	if v != "0" {
+		t.Fatalf("普通用户应写入负缓存 0，实际 %q", v)
+	}
+}

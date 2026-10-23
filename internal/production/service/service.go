@@ -430,6 +430,11 @@ func (s *ProductionService) MaterialIssueScan(ctx context.Context, req dto.Mater
 			return err
 		}
 
+		// 累计工单领料成本池（完工入库按比例从此池结转，P1.5 S1）。
+		if err := s.workOrderRepo.AddOrderCosts(tx, order.ID, moveRes.CostAmount, decimal.Zero); err != nil {
+			return err
+		}
+
 		if order.Status == WorkOrderStatusReleased {
 			return s.workOrderRepo.UpdateWorkOrderStatus(tx, order.ID, WorkOrderStatusInProgress, nil)
 		}
@@ -449,11 +454,14 @@ func (s *ProductionService) MaterialIssueScan(ctx context.Context, req dto.Mater
 
 // ProductionReceipt 生产入库/完工报工，与 MaterialIssueScan 对称，全程同一事务：
 //  1. 锁定工单（FOR UPDATE），状态须为已下达/生产中，禁止超出工单计划数量入库；
-//  2. 成品（工单 ProductID）同事务 ApplyInboundTx 入指定仓/库位（移动加权计价）；
-//  3. 写生产入库单 prod_production_receipt；
-//  4. 同事务过账：借 库存商品（1405）/ 贷 生产成本（5001），金额=单位成本×入库数量，
-//     与库存台账 cost_amount 口径一致；
-//  5. produced_qty 累加；达计划数量则置已完成并记 actual_end_at，否则已下达→生产中。
+//  2. 入库成本不接受请求传入（P1.5 S1）：从工单成本池（累计领料−累计已结转，
+//     即 5001 借方余额）按本次入库量占剩余计划量比例结转；完工收尾时全额
+//     结转剩余成本池，保证工单完工后 5001 余额轧平为零；
+//  3. 成品（工单 ProductID）同事务 ApplyInboundTx 入指定仓/库位（移动加权计价）；
+//  4. 写生产入库单 prod_production_receipt；累计 received_cost；
+//  5. 同事务过账：借 库存商品（1405）/ 贷 生产成本（5001），金额与库存台账
+//     cost_amount 口径一致；
+//  6. produced_qty 累加；达计划数量则置已完成并记 actual_end_at，否则已下达→生产中。
 func (s *ProductionService) ProductionReceipt(ctx context.Context, req dto.ProductionReceiptReq) (*dto.ProductionReceiptRes, error) {
 	if err := s.acquireIdemp(ctx, "production-receipt", req.IdempotencyKey); err != nil {
 		return nil, err
@@ -482,10 +490,32 @@ func (s *ProductionService) ProductionReceipt(ctx context.Context, req dto.Produ
 			return errors.New(50004, 409, "工单未下达或已完工，无法入库")
 		}
 		reqQty := decimalx.Qty(req.Qty)
-		reqCost := decimalx.Cost(req.UnitCost) // 单位成本 NUMERIC(18,4)
+		if !reqQty.IsPositive() {
+			return errors.New(50006, 400, "入库数量低于最小精度")
+		}
 		if order.ProducedQty.Add(reqQty).Cmp(order.PlanQty) > 0 {
 			return errors.New(50006, 400, "入库数量超出工单计划数量")
 		}
+
+		// 成本来源（P1.5 S1）：工单成本池 = 累计领料成本 − 累计已结转成本。
+		// 分批入库按 本次量/剩余计划量 比例结转；本次达计划量（完工）则全额
+		// 结转剩余池，吸收历次舍入尾差，保证 5001 在完工时点轧平。
+		pool := order.IssuedCost.Sub(order.ReceivedCost)
+		if !pool.IsPositive() {
+			return errors.New(50007, 400, "工单尚无已领料成本，请先领料再入库")
+		}
+		remainingPlan := order.PlanQty.Sub(order.ProducedQty)
+		completing := order.ProducedQty.Add(reqQty).Cmp(order.PlanQty) >= 0
+		var amount decimal.Decimal
+		if completing {
+			amount = decimalx.Money(pool)
+		} else {
+			amount = decimalx.Money(pool.Mul(reqQty).Div(remainingPlan))
+		}
+		if !amount.IsPositive() {
+			return errors.New(50007, 400, "本次入库结转成本为零，请合并到完工批次入库")
+		}
+		reqCost := decimalx.Cost(amount.Div(reqQty)) // 单位成本 NUMERIC(18,4)
 
 		// 成品入库：成品即工单 ProductID；同事务写库存与台账（内部再锁库存行）。
 		moveRes, err := s.warehouseService.ApplyInboundTx(ctx, tx, warehouseDto.MoveInput{
@@ -516,6 +546,11 @@ func (s *ProductionService) ProductionReceipt(ctx context.Context, req dto.Produ
 			return err
 		}
 
+		// 累计已结转成本（与台账/过账同一金额来源 moveRes.CostAmount）。
+		if err := s.workOrderRepo.AddOrderCosts(tx, order.ID, decimal.Zero, moveRes.CostAmount); err != nil {
+			return err
+		}
+
 		// 同事务过账：借 库存商品（1405）/ 贷 生产成本（5001），结转完工成本。
 		if err := s.finance.PostTx(ctx, tx, financeService.PostingInput{
 			BizType:     financeService.BizTypeProductionReceipt,
@@ -530,11 +565,10 @@ func (s *ProductionService) ProductionReceipt(ctx context.Context, req dto.Produ
 		}
 
 		// 工单进度：累加 produced_qty；达计划数量则完工（记 actual_end_at），否则推进到生产中。
-		newProduced := order.ProducedQty.Add(reqQty)
 		fields := map[string]interface{}{
 			"produced_qty": gorm.Expr("produced_qty + ?", reqQty),
 		}
-		if newProduced.Cmp(order.PlanQty) >= 0 {
+		if completing {
 			fields["actual_end_at"] = time.Now()
 			finalStatus = WorkOrderStatusCompleted
 			completed = true

@@ -22,6 +22,10 @@ import (
 // Redis key 定义。
 func mustChangeKey(userID int64) string  { return fmt.Sprintf("mustchg:%d", userID) }
 func pwdChangedKey(userID int64) string  { return fmt.Sprintf("pwd:chg:%d", userID) }
+
+// sessInvalidKey 会话吊销时间戳：登出时写入，早于该时刻签发的 refresh token 一律
+// 拒绝换发（P1.5 H1——登出必须能真正终止会话，而不是只拉黑当前 access jti）。
+func sessInvalidKey(userID int64) string { return fmt.Sprintf("sess:inv:%d", userID) }
 func failUserKey(username string) string { return "loginfail:user:" + username }
 func failIPKey(ip string) string         { return "loginfail:ip:" + ip }
 func lockUserKey(username string) string { return "loginlock:user:" + username }
@@ -91,13 +95,6 @@ func (s *IAMService) Login(ctx context.Context, req dto.LoginReq) (dto.LoginRes,
 	if err := s.userRepo.UpdateLastLogin(user.ID, time.Now(), ip); err != nil {
 		logger.Log(ctx).Warn("update last login failed", "error", err)
 	}
-	// 以数据库标志为准同步强制改密 Redis 标记（供中间件无 DB 查询判定）
-	if user.MustChangePwd {
-		_ = s.kv.Set(ctx, mustChangeKey(user.ID), "1", int(s.accessExpire.Seconds()))
-	} else {
-		_ = s.kv.Del(ctx, mustChangeKey(user.ID))
-	}
-
 	logger.Log(ctx).Info("user login success", "username", user.Username)
 	return s.issueTokens(ctx, user)
 }
@@ -190,12 +187,13 @@ func (s *IAMService) writeAttempt(success bool, username, ip, reason string) {
 
 func (s *IAMService) RefreshToken(ctx context.Context, refreshToken string) (dto.LoginRes, error) {
 	refreshKey := "refresh:" + refreshToken
-	userIDStr, err := s.kv.Get(ctx, refreshKey)
+	stored, err := s.kv.Get(ctx, refreshKey)
 	if err != nil {
 		return dto.LoginRes{}, errors.New(10002, 401, "refresh token无效或已过期")
 	}
-	var userID int64
-	if _, err := fmt.Sscanf(userIDStr, "%d", &userID); err != nil || userID == 0 {
+	// 值格式 userID|issuedAtUnix（issueTokens 写入）；旧格式一律视为无效。
+	var userID, issuedAt int64
+	if _, err := fmt.Sscanf(stored, "%d|%d", &userID, &issuedAt); err != nil || userID == 0 {
 		return dto.LoginRes{}, errors.New(10002, 401, "refresh token无效")
 	}
 	user, err := s.userRepo.FindByID(userID)
@@ -205,14 +203,45 @@ func (s *IAMService) RefreshToken(ctx context.Context, refreshToken string) (dto
 	if user.Status != 1 {
 		return dto.LoginRes{}, errors.New(10001, 401, "用户已禁用")
 	}
+	// P1.5 H1：改密/被重置（pwd:chg）或登出（sess:inv）之后签发的 refresh token
+	// 必须拒绝换发——否则窃取 token 者可绕过上述全部止损手段无限续期。
+	if revoked, err := s.refreshRevoked(ctx, userID, issuedAt); err != nil {
+		logger.Log(ctx).Warn("check refresh revocation failed", "error", err)
+	} else if revoked {
+		_ = s.kv.Del(ctx, refreshKey)
+		return dto.LoginRes{}, errors.New(10002, 401, "会话已失效，请重新登录")
+	}
 	if err := s.kv.Del(ctx, refreshKey); err != nil {
 		logger.Log(ctx).Warn("failed to delete old refresh token", "error", err)
 	}
 	return s.issueTokens(ctx, user)
 }
 
-// Logout 将 access token 的 jti 加入黑名单，TTL 与 token 有效期对齐。
-func (s *IAMService) Logout(ctx context.Context, jti string, accessExpire time.Duration) error {
+// refreshRevoked 判定 token 签发时刻是否早于任一吊销时间戳。
+func (s *IAMService) refreshRevoked(ctx context.Context, userID, issuedAt int64) (bool, error) {
+	for _, key := range []string{pwdChangedKey(userID), sessInvalidKey(userID)} {
+		v, err := s.kv.Get(ctx, key)
+		if err != nil {
+			return false, err
+		}
+		if v == "" {
+			continue
+		}
+		ts, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			continue
+		}
+		if issuedAt < ts {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// Logout 终止会话：当前 access jti 拉黑（TTL 与 token 有效期对齐），
+// 同时写入会话吊销时间戳——该用户此前签发的全部 refresh token 即刻不可换发
+// （P1.5 H1）。即登出 = 全端下线。
+func (s *IAMService) Logout(ctx context.Context, userID int64, jti string, accessExpire time.Duration) error {
 	if jti == "" {
 		return errors.New(10005, 400, "缺少token标识")
 	}
@@ -223,6 +252,13 @@ func (s *IAMService) Logout(ctx context.Context, jti string, accessExpire time.D
 	}
 	if err := s.kv.Set(ctx, key, "1", ttl); err != nil {
 		return errors.Wrap(err, 10300, 500, "登出失败")
+	}
+	if userID > 0 {
+		// 吊销时间戳须活过最长 refresh 会话，否则旧 token 会在戳过期后复活。
+		if err := s.kv.Set(ctx, sessInvalidKey(userID), strconv.FormatInt(time.Now().Unix(), 10),
+			int(s.refreshExpire.Seconds())); err != nil {
+			logger.Log(ctx).Warn("write session invalidation stamp failed", "error", err)
+		}
 	}
 	return nil
 }
@@ -254,13 +290,25 @@ func (s *IAMService) CheckClaims(ctx context.Context, c *auth.Claims) bool {
 }
 
 // MustChangePassword 供 ForcePasswordChange 中间件调用。
+// P1.5 H2：Redis 未命中时回源 DB 判定并回填缓存（真标记与 refresh 会话同寿命，
+// 假标记短 TTL 负缓存避免每请求回源）——refresh 换发不再能绕过强制改密。
 func (s *IAMService) MustChangePassword(ctx context.Context, userID int64) bool {
-	exists, err := s.kv.Exists(ctx, mustChangeKey(userID))
+	v, err := s.kv.Get(ctx, mustChangeKey(userID))
 	if err != nil {
 		logger.Log(ctx).Warn("check must-change-password failed", "error", err)
+	} else if v != "" {
+		return v == "1"
+	}
+	user, derr := s.userRepo.FindByID(userID)
+	if derr != nil {
 		return false
 	}
-	return exists
+	if user.MustChangePwd {
+		_ = s.kv.Set(ctx, mustChangeKey(userID), "1", int(s.refreshExpire.Seconds()))
+	} else {
+		_ = s.kv.Set(ctx, mustChangeKey(userID), "0", int(s.accessExpire.Seconds()))
+	}
+	return user.MustChangePwd
 }
 
 func (s *IAMService) ChangePassword(ctx context.Context, userID int64, req dto.ChangePasswordReq) error {
@@ -294,9 +342,10 @@ func (s *IAMService) ChangePassword(ctx context.Context, userID int64, req dto.C
 }
 
 // markPasswordChanged 记录改密时间戳：早于该时刻签发的 token 一律失效。
+// TTL 与 refreshExpire 对齐——戳若先于 refresh token 过期，被吊销的旧 token 会复活（P1.5 H1）。
 func (s *IAMService) markPasswordChanged(ctx context.Context, userID int64) error {
 	if err := s.kv.Set(ctx, pwdChangedKey(userID), strconv.FormatInt(time.Now().Unix(), 10),
-		int(s.accessExpire.Seconds())); err != nil {
+		int(s.refreshExpire.Seconds())); err != nil {
 		return errors.Wrap(err, 10300, 500, "记录密码变更失败")
 	}
 	return nil

@@ -37,12 +37,12 @@ func issueReq(workOrderNo string, fx testsupport.Fixture, qty decimal.Decimal) p
 	}
 }
 
-func receiptReq(workOrderNo string, fx testsupport.Fixture, qty, unitCost decimal.Decimal) productionDto.ProductionReceiptReq {
+// receiptReq 完工入库请求：成本由后端从工单成本池结转（P1.5 S1），不再传 unit_cost。
+func receiptReq(workOrderNo string, fx testsupport.Fixture, qty decimal.Decimal) productionDto.ProductionReceiptReq {
 	return productionDto.ProductionReceiptReq{
 		WorkOrderNo:   workOrderNo,
 		WarehouseCode: fx.Warehouse.Code,
 		LocationCode:  fx.Location.LocationCode,
 		Qty:           qty,
-		UnitCost:      unitCost,
 	}
 }

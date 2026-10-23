@@ -124,6 +124,22 @@ func (s *FinanceService) PostTx(ctx context.Context, tx *gorm.DB, in PostingInpu
 	if period == "" {
 		period = now.Format("2006-01")
 	}
+
+	// P1.5 S4：期间级 advisory lock 与 ClosePeriod 互斥——任何向某期间过账
+	// 都必须等该期间的结转事务结束，堵死「结转取数后新凭证挤进被结转期间」
+	// 的漏结窗口；同一事务内可重入（ClosePeriod 先取锁再调本方法）。
+	if err := lockPeriod(tx, period); err != nil {
+		return err
+	}
+	// 已结转期间拒绝普通业务过账（期末结转凭证自身豁免），
+	// 保证「结转取数 = 该期间最终损益」不被事后追加打破。
+	if in.BizType != BizTypePeriodClose {
+		if closed, err := s.voucherRepo.ExistsPeriodCloseTx(tx, period); err != nil {
+			return err
+		} else if closed {
+			return errors.New(60012, 409, "该会计期间已结转，禁止过账")
+		}
+	}
 	voucher := model.FinVoucher{
 		VoucherNo:   voucherNo,
 		Period:      period,

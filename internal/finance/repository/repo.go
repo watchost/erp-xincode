@@ -33,6 +33,11 @@ type AccountEntryRepository interface {
 	SumBalance(prefix string, periodFrom, periodTo *string) (decimal.Decimal, error)
 	// SumByAccount 按科目分组汇总期间区间内的借贷净额（借−贷），利润表取数用。
 	SumByAccount(prefix string, periodFrom, periodTo *string) ([]AccountBalanceRow, error)
+	// SumFlowByAccount 期间流量口径：排除期末结转凭证（biz_type='period_close'），
+	// 用于利润表/财务简表本期数——否则结转后被结转期间报表被对冲清零（P1.5 H3）。
+	SumFlowByAccount(prefix string, periodFrom, periodTo *string) ([]AccountBalanceRow, error)
+	// SumByAccountTx 同事务版汇总（期末结转在锁内取数，P1.5 S4）。
+	SumByAccountTx(tx *gorm.DB, prefix string, periodFrom, periodTo *string) ([]AccountBalanceRow, error)
 	// CashFlowByBizType 按业务类型汇总现金类科目（1001/1002）的借贷发生额。
 	CashFlowByBizType(periodFrom, periodTo *string) ([]CashFlowRow, error)
 	ExistsByAccount(accountCode string) (bool, error)
@@ -58,6 +63,8 @@ type VoucherRepository interface {
 	FindByID(id int64) (*model.FinVoucher, error)
 	List(period, bizType string, page, pageSize int) ([]model.FinVoucher, int64, error)
 	ExistsPeriodClose(period string) (bool, error)
+	// ExistsPeriodCloseTx 同事务版（期末结转锁内防重、过账的已结转期间守卫）。
+	ExistsPeriodCloseTx(tx *gorm.DB, period string) (bool, error)
 }
 
 // AccountRepository 会计科目。
@@ -231,6 +238,30 @@ func (r *accountEntryRepo) SumByAccount(prefix string, periodFrom, periodTo *str
 	return rows, err
 }
 
+func (r *accountEntryRepo) SumFlowByAccount(prefix string, periodFrom, periodTo *string) ([]AccountBalanceRow, error) {
+	var rows []AccountBalanceRow
+	q := r.db.Model(&model.FinAccountEntry{}).
+		Select("account_code, MAX(account_name) AS account_name, COALESCE(SUM(debit_amount),0) - COALESCE(SUM(credit_amount),0) AS net").
+		Where("account_code LIKE ?", prefix+"%").
+		Group("account_code").
+		Order("account_code")
+	err := withPeriodRange(q, periodFrom, periodTo).
+		Where("v.biz_type <> ?", "period_close").
+		Scan(&rows).Error
+	return rows, err
+}
+
+func (r *accountEntryRepo) SumByAccountTx(tx *gorm.DB, prefix string, periodFrom, periodTo *string) ([]AccountBalanceRow, error) {
+	var rows []AccountBalanceRow
+	q := tx.Model(&model.FinAccountEntry{}).
+		Select("account_code, MAX(account_name) AS account_name, COALESCE(SUM(debit_amount),0) - COALESCE(SUM(credit_amount),0) AS net").
+		Where("account_code LIKE ?", prefix+"%").
+		Group("account_code").
+		Order("account_code")
+	err := withPeriodRange(q, periodFrom, periodTo).Scan(&rows).Error
+	return rows, err
+}
+
 func (r *accountEntryRepo) CashFlowByBizType(periodFrom, periodTo *string) ([]CashFlowRow, error) {
 	var rows []CashFlowRow
 	q := r.db.Model(&model.FinAccountEntry{}).
@@ -295,6 +326,14 @@ func (r *voucherRepo) List(period, bizType string, page, pageSize int) ([]model.
 func (r *voucherRepo) ExistsPeriodClose(period string) (bool, error) {
 	var count int64
 	err := r.db.Model(&model.FinVoucher{}).
+		Where("biz_type = ? AND biz_no = ?", "period_close", period).
+		Count(&count).Error
+	return count > 0, err
+}
+
+func (r *voucherRepo) ExistsPeriodCloseTx(tx *gorm.DB, period string) (bool, error) {
+	var count int64
+	err := tx.Model(&model.FinVoucher{}).
 		Where("biz_type = ? AND biz_no = ?", "period_close", period).
 		Count(&count).Error
 	return count > 0, err

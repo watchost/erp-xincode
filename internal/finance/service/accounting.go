@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -220,67 +221,84 @@ func buildVoucherVO(v *model.FinVoucher, entries []dto.AccountEntryVO) dto.Vouch
 
 // ---- 期末结转 ----
 
+// periodLockKey 期间 advisory lock 键：ClosePeriod 与 PostTx 共用，
+// 把「同一期间的结转」与「向该期间过账」串行化（P1.5 S4）。
+func periodLockKey(period string) string { return "erp-fin-period:" + period }
+
+// lockPeriod 获取期间级事务咨询锁（tx 结束自动释放，同会话可重入）。
+func lockPeriod(tx *gorm.DB, period string) error {
+	return tx.Exec("SELECT pg_advisory_xact_lock(hashtext(?))", periodLockKey(period)).Error
+}
+
 // ClosePeriod 期末结转：把指定期间损益类科目（5 收入贷方 / 6 费用借方）净额
-// 结转到 4103 本年利润。收入：借 6xxx? 不——收入类结平是 借 5xxx收入 / 贷 4103；
-// 费用类结平是 借 4103 / 贷 6xxx费用。一个期间只能结转一次（uk 索引兜底）。
+// 结转到 4103 本年利润。收入类结平是 借 5xxx收入 / 贷 4103；费用类结平是
+// 借 4103 / 贷 6xxx费用。一个期间只能结转一次（uk 索引兜底）。
+//
+// P1.5 S4：预检、汇总取数、结转写入全程同一事务，并先取期间 advisory lock——
+// 与 PostTx 的期间锁互斥，堵死「汇总后、提交前有新业务过账进被结转期间」的
+// 漏结窗口；并发重复结转在锁内重检返回 60010，uk 冲突翻译为 60010 而非裸 500。
 func (s *FinanceService) ClosePeriod(ctx context.Context, period string) error {
 	if _, err := time.Parse("2006-01", period); err != nil {
 		return errors.New(10005, 400, "期间格式应为 YYYY-MM")
 	}
-	if exists, err := s.voucherRepo.ExistsPeriodClose(period); err != nil {
-		return err
-	} else if exists {
-		return errors.New(60010, 409, "该期间已结转，不能重复结转")
-	}
-
 	periodTo := nextPeriod(period)
 
-	revenues, err := s.accountEntryRepo.SumByAccount("60", &period, &periodTo)
-	if err != nil {
-		return err
-	}
-	expenses, err := s.accountEntryRepo.SumByAccount("64", &period, &periodTo)
-	if err != nil {
-		return err
-	}
-	adminExpenses, err := s.accountEntryRepo.SumByAccount("66", &period, &periodTo)
-	if err != nil {
-		return err
-	}
-	expenses = append(expenses, adminExpenses...)
-
-	var lines []PostingLine
-	profit := decimal.Zero
-	for _, r := range revenues {
-		// 收入类为贷方净额（net 为负），结平借记本科目
-		amt := r.Net.Neg()
-		if !amt.IsPositive() {
-			continue
+	err := s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
+		if err := lockPeriod(tx, period); err != nil {
+			return err
 		}
-		lines = append(lines,
-			PostingLine{AccountCode: r.AccountCode, AccountName: r.AccountName, Debit: amt},
-			PostingLine{AccountCode: AccountRetainedEarnings, AccountName: "本年利润", Credit: amt},
-		)
-		profit = profit.Add(amt)
-	}
-	for _, e := range expenses {
-		// 费用类为借方净额（net 为正），结平贷记本科目
-		amt := e.Net
-		if !amt.IsPositive() {
-			continue
+		// 锁内防重：并发结转在此串行，后到者看见已结转标记。
+		if exists, err := s.voucherRepo.ExistsPeriodCloseTx(tx, period); err != nil {
+			return err
+		} else if exists {
+			return errors.New(60010, 409, "该期间已结转，不能重复结转")
 		}
-		lines = append(lines,
-			PostingLine{AccountCode: AccountRetainedEarnings, AccountName: "本年利润", Debit: amt},
-			PostingLine{AccountCode: e.AccountCode, AccountName: e.AccountName, Credit: amt},
-		)
-		profit = profit.Sub(amt)
-	}
 
-	if len(lines) == 0 {
-		return errors.New(60011, 409, "本期无损益发生，无需结转")
-	}
+		revenues, err := s.accountEntryRepo.SumByAccountTx(tx, "60", &period, &periodTo)
+		if err != nil {
+			return err
+		}
+		expenses, err := s.accountEntryRepo.SumByAccountTx(tx, "64", &period, &periodTo)
+		if err != nil {
+			return err
+		}
+		adminExpenses, err := s.accountEntryRepo.SumByAccountTx(tx, "66", &period, &periodTo)
+		if err != nil {
+			return err
+		}
+		expenses = append(expenses, adminExpenses...)
 
-	return s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
+		var lines []PostingLine
+		profit := decimal.Zero
+		for _, r := range revenues {
+			// 收入类为贷方净额（net 为负），结平借记本科目
+			amt := r.Net.Neg()
+			if !amt.IsPositive() {
+				continue
+			}
+			lines = append(lines,
+				PostingLine{AccountCode: r.AccountCode, AccountName: r.AccountName, Debit: amt},
+				PostingLine{AccountCode: AccountRetainedEarnings, AccountName: "本年利润", Credit: amt},
+			)
+			profit = profit.Add(amt)
+		}
+		for _, e := range expenses {
+			// 费用类为借方净额（net 为正），结平贷记本科目
+			amt := e.Net
+			if !amt.IsPositive() {
+				continue
+			}
+			lines = append(lines,
+				PostingLine{AccountCode: AccountRetainedEarnings, AccountName: "本年利润", Debit: amt},
+				PostingLine{AccountCode: e.AccountCode, AccountName: e.AccountName, Credit: amt},
+			)
+			profit = profit.Sub(amt)
+		}
+
+		if len(lines) == 0 {
+			return errors.New(60011, 409, "本期无损益发生，无需结转")
+		}
+
 		return s.PostTx(ctx, tx, PostingInput{
 			BizType:     BizTypePeriodClose,
 			BizNo:       period,
@@ -290,6 +308,14 @@ func (s *FinanceService) ClosePeriod(ctx context.Context, period string) error {
 			Lines:       lines,
 		})
 	})
+	if err != nil {
+		// uk_fin_voucher_period_close 兜底：翻译为业务错误码而非裸 23505。
+		if strings.Contains(err.Error(), "uk_fin_voucher_period_close") {
+			return errors.New(60010, 409, "该期间已结转，不能重复结转")
+		}
+		return err
+	}
+	return nil
 }
 
 // nextPeriod 返回 "YYYY-MM" 的下一期间（用于左闭右开区间）。
@@ -307,16 +333,17 @@ func (s *FinanceService) GetIncomeStatement(ctx context.Context, period string) 
 	}
 	periodTo := nextPeriod(period)
 
-	revenueRows, err := s.accountEntryRepo.SumByAccount("60", &period, &periodTo)
+	// 期间流量口径：排除期末结转凭证，否则结转后本期损益被对冲清零（P1.5 H3）。
+	revenueRows, err := s.accountEntryRepo.SumFlowByAccount("60", &period, &periodTo)
 	if err != nil {
 		return nil, err
 	}
-	expenseRows, err := s.accountEntryRepo.SumByAccount("64", &period, &periodTo)
+	expenseRows, err := s.accountEntryRepo.SumFlowByAccount("64", &period, &periodTo)
 	if err != nil {
 		return nil, err
 	}
 	// 66xx 期间费用同样属于费用类
-	adminRows, err := s.accountEntryRepo.SumByAccount("66", &period, &periodTo)
+	adminRows, err := s.accountEntryRepo.SumFlowByAccount("66", &period, &periodTo)
 	if err != nil {
 		return nil, err
 	}

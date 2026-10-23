@@ -51,11 +51,12 @@ func (h *IAMHandler) RefreshToken(c *gin.Context) {
 	response.Success(c, res)
 }
 
-// Logout 将当前 access token 的 jti 拉黑；前端应同时丢弃 refresh token。
+// Logout 终止会话：当前 access jti 拉黑 + 吊销该用户全部 refresh token（全端下线）。
 func (h *IAMHandler) Logout(c *gin.Context) {
 	jti, _ := c.Get(middleware.CtxJTI)
 	jtiStr, _ := jti.(string)
-	if err := h.authService.Logout(c.Request.Context(), jtiStr, h.accessExpire); err != nil {
+	userID := c.GetInt64(middleware.CtxUserID)
+	if err := h.authService.Logout(c.Request.Context(), userID, jtiStr, h.accessExpire); err != nil {
 		response.Fail(c, err)
 		return
 	}

@@ -23,6 +23,8 @@ type WorkOrderRepository interface {
 
 	UpdateMaterialIssuedQty(tx *gorm.DB, materialID int64, qty decimal.Decimal) error
 	UpdateWorkOrderStatus(tx *gorm.DB, workOrderID int64, status int, fields map[string]interface{}) error
+	// AddOrderCosts 累加工单成本池（领料成本/已结转成本），须在持工单行锁的事务内调用。
+	AddOrderCosts(tx *gorm.DB, workOrderID int64, issuedDelta, receivedDelta decimal.Decimal) error
 }
 
 type ProductionReceiptRepository interface {
@@ -116,6 +118,21 @@ func (r *workOrderRepo) UpdateMaterialIssuedQty(tx *gorm.DB, materialID int64, q
 	return tx.Model(&model.ProWorkOrderMaterial{}).
 		Where("id = ?", materialID).
 		Update("issued_qty", gorm.Expr("issued_qty + ?", qty)).Error
+}
+
+// AddOrderCosts 累加工单成本池：issuedDelta 计入领料成本、receivedDelta 计入已结转成本（可为零值跳过对应更新）。
+func (r *workOrderRepo) AddOrderCosts(tx *gorm.DB, workOrderID int64, issuedDelta, receivedDelta decimal.Decimal) error {
+	fields := map[string]interface{}{}
+	if !issuedDelta.IsZero() {
+		fields["issued_cost"] = gorm.Expr("issued_cost + ?", issuedDelta)
+	}
+	if !receivedDelta.IsZero() {
+		fields["received_cost"] = gorm.Expr("received_cost + ?", receivedDelta)
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	return tx.Model(&model.ProWorkOrder{}).Where("id = ?", workOrderID).Updates(fields).Error
 }
 
 func (r *workOrderRepo) UpdateWorkOrderStatus(tx *gorm.DB, workOrderID int64, status int, fields map[string]interface{}) error {

@@ -65,15 +65,13 @@ type MaterialIssueScanRes struct {
 
 // ProductionReceiptReq 生产入库/完工报工扫码。
 // 成品取工单 ProductID，无需扫码物料；WarehouseCode/LocationCode 为成品入仓位。
-// UnitCost 为本次完工单位成本（标准/估算成本，P1 成本归集后改为实际结转），
-// 用于成品库存移动加权计价与「借 库存商品 / 贷 生产成本」过账，必须 > 0 以保证
-// 库存台账金额与财务分录一致。
+// 入库成本不接受请求传入（P1.5 S1）：由后端从工单成本池（累计领料−累计已结转）
+// 按比例结转，完工批次全额收尾，保证库存计价、财务凭证与 5001 轧平一致。
 type ProductionReceiptReq struct {
 	WorkOrderNo    string          `json:"work_order_no" binding:"required"`
 	WarehouseCode  string          `json:"warehouse_code" binding:"required"`
 	LocationCode   string          `json:"location_code" binding:"required"`
 	Qty            decimal.Decimal `json:"qty" binding:"decgt=0"`
-	UnitCost       decimal.Decimal `json:"unit_cost" binding:"decgt=0"`
 	DeviceCode     string          `json:"device_code"`
 	IdempotencyKey string          `json:"-"`
 }

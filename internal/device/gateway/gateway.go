@@ -17,12 +17,14 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 
 	"erp-system/internal/device/model"
 	"erp-system/internal/device/repository"
+	"erp-system/internal/pkg/logger"
 )
 
 const (
@@ -47,10 +49,37 @@ type Envelope struct {
 
 // conn 表示一台在线设备的长连接。
 type conn struct {
-	device   *model.DevDevice
-	ws       *websocket.Conn
-	send     chan []byte
-	lastSeen time.Time
+	device *model.DevDevice
+	ws     *websocket.Conn
+	send   chan []byte
+	// done 关闭即令写泵退出；closeOnce 保证踢连接/慢连接/关停等多路并发
+	// 关闭只执行一次——send 通道永不关闭，杜绝 close/send 竞态 panic（P1.5 S2）。
+	done      chan struct{}
+	closeOnce sync.Once
+	lastSeen  atomic.Int64 // UnixNano：读泵写、心跳清扫读
+}
+
+func newConn(device *model.DevDevice, ws *websocket.Conn) *conn {
+	c := &conn{device: device, ws: ws, send: make(chan []byte, sendBuf), done: make(chan struct{})}
+	c.touch()
+	return c
+}
+
+// close 幂等关闭：通知写泵退出并断开 socket（gorilla 的 Close 可与读写并发）。
+func (c *conn) close() {
+	c.closeOnce.Do(func() {
+		close(c.done)
+		_ = c.ws.Close()
+	})
+}
+
+func (c *conn) touch()            { c.lastSeen.Store(time.Now().UnixNano()) }
+func (c *conn) seen() time.Time   { return time.Unix(0, c.lastSeen.Load()) }
+
+// pendingEntry 等待 ack 的下行指令，deviceID 用于 ack 归属校验（P1.5 S3）。
+type pendingEntry struct {
+	deviceID int64
+	ch       chan Envelope
 }
 
 // Hub 维护 deviceCode → 连接的注册表，处理上下行消息与 ack 关联。
@@ -60,7 +89,7 @@ type Hub struct {
 
 	mu      sync.RWMutex
 	conns   map[string]*conn // key: device_code
-	pending map[string]chan Envelope
+	pending map[string]pendingEntry
 
 	upgrader websocket.Upgrader
 }
@@ -70,7 +99,7 @@ func NewHub(deviceRepo repository.DeviceRepository, msgRepo repository.DeviceMes
 		deviceRepo: deviceRepo,
 		msgRepo:    msgRepo,
 		conns:      make(map[string]*conn),
-		pending:    make(map[string]chan Envelope),
+		pending:    make(map[string]pendingEntry),
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  4096,
 			WriteBufferSize: 4096,
@@ -134,8 +163,11 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c := &conn{device: device, ws: ws, send: make(chan []byte, sendBuf), lastSeen: time.Now()}
+	c := newConn(device, ws)
 	h.register(c)
+	// 任意退出路径（含 readPump panic 被 http server 回收）都断开 socket、
+	// 停掉写泵，杜绝连接泄漏（P1.5 H9）。
+	defer c.close()
 
 	now := time.Now()
 	device.Status = model.DeviceStatusOnline
@@ -158,10 +190,11 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 func (h *Hub) register(c *conn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	// 同设备重复连接：踢掉旧连接（后发优先）。
+	// 同设备重复连接：踢掉旧连接（后发优先）——停写泵并断开旧 socket，
+	// 旧连接的 readPump 随读错误退出（P1.5 H9）。
 	if old, ok := h.conns[c.device.DeviceCode]; ok {
-		close(old.send)
 		delete(h.conns, c.device.DeviceCode)
+		old.close()
 	}
 	h.conns[c.device.DeviceCode] = c
 }
@@ -181,7 +214,11 @@ func (h *Hub) readPump(c *conn) {
 	c.ws.SetReadLimit(1 << 20)
 	_ = c.ws.SetReadDeadline(time.Now().Add(pongWait))
 	c.ws.SetPongHandler(func(string) error {
-		c.lastSeen = time.Now()
+		c.touch()
+		// 纯保活连接也刷新 DB 心跳，否则只有 ping/pong 的设备会被
+		// 心跳清扫误判离线（P1.5 H10）。ping 周期 30s，写库频率可接受。
+		c.device.LastHeartbeat = time.Now()
+		_ = h.deviceRepo.Update(c.device)
 		return c.ws.SetReadDeadline(time.Now().Add(pongWait))
 	})
 	for {
@@ -189,7 +226,7 @@ func (h *Hub) readPump(c *conn) {
 		if err != nil {
 			return
 		}
-		c.lastSeen = time.Now()
+		c.touch()
 		var env Envelope
 		if json.Unmarshal(data, &env) != nil {
 			continue
@@ -199,16 +236,24 @@ func (h *Hub) readPump(c *conn) {
 }
 
 func (h *Hub) writePump(c *conn) {
+	// 独立 goroutine：任何意外 panic 都不能拖垮整个进程（P1.5 S2）。
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Log(context.Background()).Error("device gateway writePump panic",
+				"device_code", c.device.DeviceCode, "panic", r)
+		}
+	}()
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
-		case data, ok := <-c.send:
+		case <-c.done:
+			return
+		default:
+		}
+		select {
+		case data := <-c.send:
 			_ = c.ws.SetWriteDeadline(time.Now().Add(writeWait))
-			if !ok {
-				_ = c.ws.WriteMessage(websocket.CloseMessage, nil)
-				return
-			}
 			if c.ws.WriteMessage(websocket.TextMessage, data) != nil {
 				return
 			}
@@ -217,6 +262,8 @@ func (h *Hub) writePump(c *conn) {
 			if c.ws.WriteMessage(websocket.PingMessage, nil) != nil {
 				return
 			}
+		case <-c.done:
+			return
 		}
 	}
 }
@@ -225,13 +272,18 @@ func (h *Hub) writePump(c *conn) {
 func (h *Hub) handleUp(c *conn, env *Envelope) {
 	if env.Type == model.MsgTypeAck {
 		h.mu.Lock()
-		ch, ok := h.pending[env.AckID]
+		entry, ok := h.pending[env.AckID]
 		delete(h.pending, env.AckID)
 		h.mu.Unlock()
+		// P1.5 S3：ack 必须来自指令目标设备本人——跨设备伪造/串台 ack 直接丢弃。
+		if ok && entry.deviceID != c.device.ID {
+			return
+		}
 		// 先落库再唤醒等待方，保证 SendAndWait 返回时消息状态已可见。
-		h.ackMessage(env.AckID, true)
+		// 迟到 ack（等待方已超时置失败）经 MarkAckedIfPending 的终态守卫被忽略（P1.5 H8）。
+		h.ackMessage(env.AckID, c.device.ID, true)
 		if ok {
-			ch <- *env
+			entry.ch <- *env
 		}
 		return
 	}
@@ -272,9 +324,11 @@ func (h *Hub) Send(deviceCode string, env Envelope) bool {
 	select {
 	case c.send <- data:
 		return true
+	case <-c.done:
+		return false
 	default:
 		// 慢连接缓冲写满：断开让设备重连，避免无界积压。
-		close(c.send)
+		c.close()
 		return false
 	}
 }
@@ -283,12 +337,13 @@ func (h *Hub) Send(deviceCode string, env Envelope) bool {
 // 调用方（command 流程）负责据此把消息状态推进到 成功/失败。
 func (h *Hub) SendAndWait(deviceCode string, env Envelope, timeout time.Duration) (Envelope, bool) {
 	h.mu.Lock()
-	if _, ok := h.conns[deviceCode]; !ok {
+	connection, ok := h.conns[deviceCode]
+	if !ok {
 		h.mu.Unlock()
 		return Envelope{}, false
 	}
 	ch := make(chan Envelope, 1)
-	h.pending[env.MessageID] = ch
+	h.pending[env.MessageID] = pendingEntry{deviceID: connection.device.ID, ch: ch}
 	h.mu.Unlock()
 
 	defer func() {
@@ -308,31 +363,37 @@ func (h *Hub) SendAndWait(deviceCode string, env Envelope, timeout time.Duration
 	}
 }
 
-// ackMessage 把下行消息标记为已确认/失败。
-func (h *Hub) ackMessage(messageID string, ok bool) {
+// ackMessage 把下行消息标记为已确认/失败：归属 deviceID 且仍待确认才生效
+// （单条条件 UPDATE，串台 ack 与迟到 ack 都无法改写终态）。
+func (h *Hub) ackMessage(messageID string, deviceID int64, ok bool) {
 	if h.msgRepo == nil {
 		return
 	}
-	msg, err := h.msgRepo.FindByMessageID(messageID)
-	if err != nil {
-		return
+	status := model.MessageStatusSuccess
+	if !ok {
+		status = model.MessageStatusFailed
 	}
-	now := time.Now()
-	msg.AckedAt = &now
-	if ok {
-		msg.Status = model.MessageStatusSuccess
-	} else {
-		msg.Status = model.MessageStatusFailed
-	}
-	_ = h.msgRepo.Update(msg)
+	_, _ = h.msgRepo.MarkAckedIfPending(messageID, deviceID, status, time.Now())
 }
 
 // FailMessage 显式把下行消息标记失败（超时未 ack）。
-func (h *Hub) FailMessage(messageID string) { h.ackMessage(messageID, false) }
+func (h *Hub) FailMessage(messageID string, deviceID int64) { h.ackMessage(messageID, deviceID, false) }
 
 // SweepOffline 把超过 heartbeatTimeout 无心跳的在线设备置为离线；调用方按 10s 周期触发。
+// 同时断开注册表里的陈旧连接，避免 DB 已离线但 IsOnline 仍为 true 的幻影在线（P1.5 H10）。
 func (h *Hub) SweepOffline(heartbeatTimeout time.Duration) (int64, error) {
-	return h.deviceRepo.MarkOfflineBefore(time.Now().Add(-heartbeatTimeout))
+	threshold := time.Now().Add(-heartbeatTimeout)
+	n, err := h.deviceRepo.MarkOfflineBefore(threshold)
+
+	h.mu.Lock()
+	for code, c := range h.conns {
+		if c.seen().Before(threshold) {
+			delete(h.conns, code)
+			c.close()
+		}
+	}
+	h.mu.Unlock()
+	return n, err
 }
 
 // CloseAll 关停网关时断开全部连接（服务优雅退出）。
@@ -340,8 +401,8 @@ func (h *Hub) CloseAll() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for code, c := range h.conns {
-		close(c.send)
 		delete(h.conns, code)
+		c.close()
 	}
 }
 

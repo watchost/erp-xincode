@@ -130,12 +130,12 @@ func TestProductionFlow_DecimalBomIssueReceipt(t *testing.T) {
 	}
 
 	// 超产 1.1 > 计划 1 → 50006
-	if _, err := svc.ProductionReceipt(ctx, receiptReq(wo.WorkOrderNo, fx, testsupport.D("1.1"), testsupport.D("10"))); appCode(err) != 50006 {
+	if _, err := svc.ProductionReceipt(ctx, receiptReq(wo.WorkOrderNo, fx, testsupport.D("1.1"))); appCode(err) != 50006 {
 		t.Fatalf("超产应返回 50006，实际 %v", err)
 	}
 
-	// 完工入库 1@10：借库存商品/贷生产成本，工单置完成
-	res, err := svc.ProductionReceipt(ctx, receiptReq(wo.WorkOrderNo, fx, testsupport.D("1"), testsupport.D("10")))
+	// 完工入库 1 件：成本从工单成本池全额结转（领料 220.00），不接受请求传价（S1）。
+	res, err := svc.ProductionReceipt(ctx, receiptReq(wo.WorkOrderNo, fx, testsupport.D("1")))
 	if err != nil {
 		t.Fatalf("完工入库失败: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestProductionFlow_DecimalBomIssueReceipt(t *testing.T) {
 		t.Fatal("完工凭证借贷不平衡")
 	}
 
-	// 成品库存 1@10、台账金额 10.00
+	// 成品库存 1@220（=领料成本 220.00 全额结转）、台账金额 220.00
 	var fgInv struct {
 		Qty     decimal.Decimal
 		AvgCost decimal.Decimal
@@ -154,8 +154,102 @@ func TestProductionFlow_DecimalBomIssueReceipt(t *testing.T) {
 	if err := gdb.Table("inv_inventory").Where("material_id = ?", product.ID).Take(&fgInv).Error; err != nil {
 		t.Fatal(err)
 	}
-	if !fgInv.Qty.Equal(testsupport.D("1")) || !fgInv.AvgCost.Equal(testsupport.D("10")) {
+	if !fgInv.Qty.Equal(testsupport.D("1")) || !fgInv.AvgCost.Equal(testsupport.D("220")) {
 		t.Fatalf("成品库存错误: %+v", fgInv)
+	}
+
+	// 完工后 5001 轧平：借方 220（领料）= 贷方 220（入库结转），成本池清零。
+	var costDebit, costCredit decimal.Decimal
+	gdb.Model(&model.FinAccountEntry{}).Where("account_code = ?", "5001").
+		Select("COALESCE(SUM(debit_amount),0)").Scan(&costDebit)
+	gdb.Model(&model.FinAccountEntry{}).Where("account_code = ?", "5001").
+		Select("COALESCE(SUM(credit_amount),0)").Scan(&costCredit)
+	if !costDebit.Equal(costCredit) || !costDebit.Equal(testsupport.D("220")) {
+		t.Fatalf("完工后 5001 应轧平于 220.00，实际 借%v 贷%v", costDebit, costCredit)
+	}
+	var woCosts struct {
+		IssuedCost   decimal.Decimal
+		ReceivedCost decimal.Decimal
+	}
+	if err := gdb.Table("prod_work_order").Where("work_order_no = ?", wo.WorkOrderNo).
+		Select("issued_cost, received_cost").Take(&woCosts).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !woCosts.IssuedCost.Equal(woCosts.ReceivedCost) {
+		t.Fatalf("完工后成本池应清零，实际 issued=%v received=%v", woCosts.IssuedCost, woCosts.ReceivedCost)
+	}
+}
+
+// P1.5 S1：入库成本从工单成本池按比例结转——分批入库按比例、完工批全额收尾；
+// 未领料（成本池为空）拒绝入库 50007。
+func TestProductionReceipt_CostPoolAllocation(t *testing.T) {
+	gdb := testsupport.NewDB(t)
+	fx := testsupport.CreateFixture(t, gdb, "pool")
+	svc, _, _ := newProductionService(t, gdb)
+	whSvc := testsupport.NewWarehouseService(gdb)
+	ctx := testsupport.CtxWithUser(1)
+	product := createProduct(t, gdb, "PROD-POOL-1")
+
+	if _, err := svc.CreateBom(ctx, productionDto.CreateBomReq{
+		ProductID: product.ID,
+		Items: []productionDto.BomItemReq{{
+			MaterialID: fx.Material.ID,
+			Qty:        testsupport.D("1"),
+			Unit:       "个",
+			ScrapRate:  decimal.Zero,
+		}},
+	}); err != nil {
+		t.Fatalf("创建 BOM 失败: %v", err)
+	}
+	if _, err := whSvc.Inbound(ctx, inboundFor(fx, testsupport.D("10"), testsupport.D("30"))); err != nil {
+		t.Fatalf("备料失败: %v", err)
+	}
+	wo, err := svc.CreateWorkOrder(ctx, productionDto.CreateWorkOrderReq{
+		ProductID: product.ID,
+		PlanQty:   testsupport.D("4"),
+	})
+	if err != nil {
+		t.Fatalf("创建工单失败: %v", err)
+	}
+
+	// 未领料即入库 → 50007（成本池为空）
+	if err := svc.ReleaseWorkOrder(ctx, wo.WorkOrderNo); err != nil {
+		t.Fatalf("下达失败: %v", err)
+	}
+	if _, err := svc.ProductionReceipt(ctx, receiptReq(wo.WorkOrderNo, fx, testsupport.D("1"))); appCode(err) != 50007 {
+		t.Fatalf("无成本池入库应返回 50007，实际 %v", err)
+	}
+
+	// 领料 4@30 → 成本池 120.00
+	if _, err := svc.MaterialIssueScan(ctx, issueReq(wo.WorkOrderNo, fx, testsupport.D("4"))); err != nil {
+		t.Fatalf("领料失败: %v", err)
+	}
+
+	// 第一批入库 1 件：按比例结转 120×1/4=30.00，成品均价 30
+	if _, err := svc.ProductionReceipt(ctx, receiptReq(wo.WorkOrderNo, fx, testsupport.D("1"))); err != nil {
+		t.Fatalf("第一批入库失败: %v", err)
+	}
+	var fgInv struct{ AvgCost decimal.Decimal }
+	if err := gdb.Table("inv_inventory").Where("material_id = ?", product.ID).Take(&fgInv).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !fgInv.AvgCost.Equal(testsupport.D("30")) {
+		t.Fatalf("第一批应按比例结转 30.00，实际 %v", fgInv.AvgCost)
+	}
+
+	// 完工批入库 3 件：全额收尾剩余 90.00 → 成本池清零
+	res, err := svc.ProductionReceipt(ctx, receiptReq(wo.WorkOrderNo, fx, testsupport.D("3")))
+	if err != nil {
+		t.Fatalf("完工批入库失败: %v", err)
+	}
+	if !res.Completed {
+		t.Fatal("应完工")
+	}
+	var receiptCredit decimal.Decimal
+	gdb.Model(&model.FinAccountEntry{}).Where("biz_type = ? AND account_code = ?", "production_receipt", "5001").
+		Select("COALESCE(SUM(credit_amount),0)").Scan(&receiptCredit)
+	if !receiptCredit.Equal(testsupport.D("120")) {
+		t.Fatalf("入库累计结转应等于领料成本 120.00（5001 轧平），实际 %v", receiptCredit)
 	}
 }
 
@@ -284,7 +378,7 @@ func TestCloseWorkOrder(t *testing.T) {
 	}
 
 	// 完工：可关闭
-	if _, err := svc.ProductionReceipt(ctx, receiptReq(issuedNo, fx, testsupport.D("2"), testsupport.D("10"))); err != nil {
+	if _, err := svc.ProductionReceipt(ctx, receiptReq(issuedNo, fx, testsupport.D("2"))); err != nil {
 		t.Fatalf("完工入库失败: %v", err)
 	}
 	if err := svc.CloseWorkOrder(ctx, issuedNo); err != nil {

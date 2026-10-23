@@ -165,7 +165,7 @@ func (s *DeviceService) SendCommand(ctx context.Context, deviceCode string, req 
 		Timestamp: time.Now().Unix(),
 	}, commandAckTimeout)
 	if !ok {
-		s.hub.FailMessage(msg.MessageID)
+		s.hub.FailMessage(msg.MessageID, msg.DeviceID)
 		// 超时消息已落库置失败，message_id 可经消息流水查询。
 		return nil, errors.New(errCodeCommandTimeout, 504, "指令超时未确认")
 	}

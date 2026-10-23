@@ -14,6 +14,8 @@ type ProWorkOrder struct {
 	ProductID     int64           `json:"product_id"`
 	PlanQty       decimal.Decimal `json:"plan_qty"`
 	ProducedQty   decimal.Decimal `json:"produced_qty"`
+	IssuedCost    decimal.Decimal `json:"issued_cost"`   // 累计领料成本（5001 借方，移动加权口径）
+	ReceivedCost  decimal.Decimal `json:"received_cost"` // 累计入库结转成本（5001 贷方）
 	Status        int             `json:"status"`
 	PlanStartAt   time.Time       `json:"plan_start_at"`
 	PlanEndAt     time.Time       `json:"plan_end_at"`

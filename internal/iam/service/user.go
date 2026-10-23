@@ -20,6 +20,15 @@ import (
 
 const seedAdminID = 1
 
+// guardBuiltinAdmin 内置超管保护：除 admin 本人外，任何 iam:user 权限持有者
+// 不得重置其密码、停用或剥角色（P1.5 S6——堵死「重置 admin 密码接管超管」提权链）。
+func guardBuiltinAdmin(ctx context.Context, targetID int64) error {
+	if targetID == seedAdminID && auth.UserIDFromContext(ctx) != seedAdminID {
+		return errors.New(10006, 409, "内置管理员账号仅本人可维护")
+	}
+	return nil
+}
+
 // resetAlphabet 去掉易混字符 0/O/1/I/L，便于人工抄写。
 const resetAlphabet = "23456789ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz"
 
@@ -147,6 +156,9 @@ func (s *IAMService) CreateUser(ctx context.Context, req dto.CreateUserReq) erro
 }
 
 func (s *IAMService) UpdateUser(ctx context.Context, id int64, req dto.UpdateUserReq) error {
+	if err := guardBuiltinAdmin(ctx, id); err != nil {
+		return err
+	}
 	if _, err := s.userRepo.FindByID(id); err != nil {
 		return errors.New(10100, 404, "用户不存在")
 	}
@@ -201,6 +213,9 @@ func (s *IAMService) UpdateUser(ctx context.Context, id int64, req dto.UpdateUse
 
 // AssignUserRoles 独立的角色分配端点（PUT /iam/users/:id/roles）。
 func (s *IAMService) AssignUserRoles(ctx context.Context, id int64, req dto.AssignUserRolesReq) error {
+	if err := guardBuiltinAdmin(ctx, id); err != nil {
+		return err
+	}
 	if _, err := s.userRepo.FindByID(id); err != nil {
 		return errors.New(10100, 404, "用户不存在")
 	}
@@ -243,6 +258,9 @@ func (s *IAMService) DeleteUser(ctx context.Context, id int64) error {
 }
 
 func (s *IAMService) ResetPassword(ctx context.Context, id int64, req dto.ResetPasswordReq) (dto.ResetPasswordRes, error) {
+	if err := guardBuiltinAdmin(ctx, id); err != nil {
+		return dto.ResetPasswordRes{}, err
+	}
 	user, err := s.userRepo.FindByID(id)
 	if err != nil {
 		return dto.ResetPasswordRes{}, errors.New(10100, 404, "用户不存在")
@@ -271,7 +289,8 @@ func (s *IAMService) ResetPassword(ctx context.Context, id int64, req dto.ResetP
 	}); err != nil {
 		return dto.ResetPasswordRes{}, err
 	}
-	if err := s.kv.Set(ctx, mustChangeKey(id), "1", int(s.accessExpire.Seconds())); err != nil {
+	// 标记须与最长 refresh 会话同寿命（P1.5 H2）
+	if err := s.kv.Set(ctx, mustChangeKey(id), "1", int(s.refreshExpire.Seconds())); err != nil {
 		return dto.ResetPasswordRes{}, errors.Wrap(err, 10300, 500, "标记强制改密失败")
 	}
 	// 重置后旧 access token 立即失效

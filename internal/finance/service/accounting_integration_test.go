@@ -4,6 +4,7 @@ package service_test
 
 import (
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -216,6 +217,43 @@ func TestClosePeriod(t *testing.T) {
 		t.Fatalf("重复结转应返回 60010，实际 %v", err)
 	}
 
+	// P1.5 H3：结转后利润表本期数不被结转分录对冲清零（流量口径排除 period_close）
+	is2, err := svc.GetIncomeStatement(ctx, period)
+	if err != nil {
+		t.Fatalf("结转后利润表查询失败: %v", err)
+	}
+	if !is2.TotalRevenue.Equal(testsupport.D("1000")) || !is2.TotalExpense.Equal(testsupport.D("300")) {
+		t.Fatalf("结转后利润表应仍列示本期发生 1000/300，实际 %+v", is2)
+	}
+	if !is2.NetProfit.Equal(testsupport.D("700")) {
+		t.Fatalf("结转后净利润应仍为 700，实际 %v", is2.NetProfit)
+	}
+	rep, err := svc.GetFinancialReport(ctx, period)
+	if err != nil {
+		t.Fatalf("财务简表查询失败: %v", err)
+	}
+	if !rep.TotalRevenue.Equal(testsupport.D("1000")) || !rep.TotalCost.Equal(testsupport.D("300")) {
+		t.Fatalf("结转后财务简表本期数应仍为 1000/300，实际 %+v", rep)
+	}
+	// 资产端为时点余额口径（含结转分录）：1002 净额 700 = 收入1000 − 费用300
+	if !rep.TotalAssets.IsPositive() {
+		t.Fatalf("结转后资产余额不应被对冲，实际 %v", rep.TotalAssets)
+	}
+
+	// P1.5 S4：已结转期间拒绝普通业务过账 → 60012
+	err = db.NewTxManager(gdb).WithTx(ctx, func(tx *gorm.DB) error {
+		return svc.PostTx(ctx, tx, financeService.PostingInput{
+			BizType: "manual", BizNo: "LATE-001", Description: "迟到的8月凭证", Period: period,
+			Lines: []financeService.PostingLine{
+				{AccountCode: "1002", Debit: testsupport.D("1")},
+				{AccountCode: "6001", Credit: testsupport.D("1")},
+			},
+		})
+	})
+	if accErrCode(err) != 60012 {
+		t.Fatalf("已结转期间过账应返回 60012，实际 %v", err)
+	}
+
 	// 无损益期间 → 60011
 	if err := svc.ClosePeriod(ctx, "2026-07"); accErrCode(err) != 60011 {
 		t.Fatalf("无损益期间应返回 60011，实际 %v", err)
@@ -231,6 +269,69 @@ func TestClosePeriod(t *testing.T) {
 	}
 	if !cf.NetCashFlow.Equal(testsupport.D("700")) {
 		t.Fatalf("现金净流量应为 700，实际 %v", cf.NetCashFlow)
+	}
+}
+
+// P1.5 S4：并发期末结转被期间 advisory lock 串行化——恰好一个成功、
+// 其余在锁内重检返回 60010，且只落一张结转凭证。
+func TestClosePeriod_Concurrent(t *testing.T) {
+	gdb := testsupport.NewDB(t)
+	svc := testsupport.NewFinanceService(gdb)
+	ctx := testsupport.Ctx()
+	period := "2026-05"
+
+	postVoucher(t, gdb, svc, financeService.PostingInput{
+		BizType: "manual", BizNo: "S-100", Description: "5月销售收入", Period: period,
+		Lines: []financeService.PostingLine{
+			{AccountCode: "1002", Debit: testsupport.D("500")},
+			{AccountCode: "6001", Credit: testsupport.D("500")},
+		},
+	})
+
+	const n = 4
+	var wg sync.WaitGroup
+	codes := make(chan int, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			codes <- accErrCode(svc.ClosePeriod(ctx, period))
+		}()
+	}
+	wg.Wait()
+	close(codes)
+
+	succeeded, dupRejected := 0, 0
+	for c := range codes {
+		switch c {
+		case 0:
+			succeeded++
+		case 60010:
+			dupRejected++
+		default:
+			t.Fatalf("并发结转出现意外错误码 %d", c)
+		}
+	}
+	if succeeded != 1 || dupRejected != n-1 {
+		t.Fatalf("并发结转应恰 1 成功、%d 个 60010，实际 成功=%d 拒绝=%d", n-1, succeeded, dupRejected)
+	}
+
+	// 只生成一张 period_close 凭证
+	var closes int64
+	if err := gdb.Table("fin_voucher").Where("biz_type = 'period_close' AND biz_no = ?", period).
+		Count(&closes).Error; err != nil {
+		t.Fatal(err)
+	}
+	if closes != 1 {
+		t.Fatalf("结转凭证应只有 1 张，实际 %d", closes)
+	}
+	// 4103 贷方净额恰好 500（未被重复结转放大）
+	plNet, err := svcSum(gdb, "4103", period, "2026-06")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plNet.Equal(testsupport.D("-500")) {
+		t.Fatalf("4103 贷方净额应为 500，实际 %v", plNet)
 	}
 }
 
