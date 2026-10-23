@@ -136,7 +136,17 @@ type BomExplosionNodeVO struct {
 	StandardCost decimal.Decimal      `json:"standard_cost"`
 	SubtotalCost decimal.Decimal      `json:"subtotal_cost"`
 	Level        int                  `json:"level"`
-	Children     []BomExplosionNodeVO `json:"children,omitempty"`
+	// CostPending=true 表示本节点或其下级存在缺少成本数据的末级物料，
+	// StandardCost/SubtotalCost 只是已知部分之和，不是确定值。
+	CostPending bool                 `json:"cost_pending"`
+	Children    []BomExplosionNodeVO `json:"children,omitempty"`
+}
+
+// MissingCostMaterialVO 缺少成本数据的末级物料。
+type MissingCostMaterialVO struct {
+	MaterialID   int64  `json:"material_id"`
+	MaterialCode string `json:"material_code"`
+	MaterialName string `json:"material_name"`
 }
 
 type BomCostRollupVO struct {
@@ -147,7 +157,10 @@ type BomCostRollupVO struct {
 	LaborCost     decimal.Decimal     `json:"labor_cost"`
 	OverheadCost  decimal.Decimal     `json:"overhead_cost"`
 	StandardCost  decimal.Decimal     `json:"standard_cost"`
-	ExplosionTree *BomExplosionNodeVO `json:"explosion_tree"`
+	// CostPending=true 时 MaterialCost/StandardCost 为不完整的下限值，不可作为确定标准成本使用。
+	CostPending          bool                    `json:"cost_pending"`
+	MissingCostMaterials []MissingCostMaterialVO `json:"missing_cost_materials"`
+	ExplosionTree        *BomExplosionNodeVO     `json:"explosion_tree"`
 }
 
 type CostVarianceReq struct {

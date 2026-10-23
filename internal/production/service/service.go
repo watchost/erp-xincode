@@ -736,24 +736,50 @@ func (s *ProductionService) explodeNode(ctx context.Context, materialID int64, b
 				childNode.EffectiveQty = childBaseQty.Mul(baseQty)
 				node.Children = append(node.Children, *childNode)
 				totalMaterialCost = totalMaterialCost.Add(childCost.Mul(item.Qty.Mul(effectiveRate)))
+				if childNode.CostPending {
+					node.CostPending = true
+				}
 			}
 		}
 		node.SubtotalCost = totalMaterialCost
 		node.StandardCost = totalMaterialCost
 	} else {
-		// 末级原材料：取库存移动加权成本真实值；若无成本数据则记为 0
+		// 末级原材料：取库存移动加权成本真实值。
+		// 查不到任何成本数据时标记 CostPending（区别于真实成本为 0），不编造数值。
 		var unitCost decimal.Decimal
+		known := false
 		if s.warehouseService != nil {
-			if cost, ok, _ := s.warehouseService.GetMaterialAvgCost(ctx, materialID); ok && cost.IsPositive() {
+			if cost, ok, _ := s.warehouseService.GetMaterialAvgCost(ctx, materialID); ok {
 				unitCost = cost
+				known = true
 			}
 		}
+		node.CostPending = !known
 		node.StandardCost = unitCost
 		node.SubtotalCost = unitCost.Mul(baseQty)
 		totalMaterialCost = unitCost
 	}
 
 	return node, totalMaterialCost, nil
+}
+
+// collectMissingCost 收集树中缺少成本数据的末级物料（按物料去重）。
+func collectMissingCost(n *dto.BomExplosionNodeVO, seen map[int64]bool, out *[]dto.MissingCostMaterialVO) {
+	if n == nil {
+		return
+	}
+	if len(n.Children) == 0 {
+		if n.CostPending && !seen[n.MaterialID] {
+			seen[n.MaterialID] = true
+			*out = append(*out, dto.MissingCostMaterialVO{
+				MaterialID: n.MaterialID, MaterialCode: n.MaterialCode, MaterialName: n.MaterialName,
+			})
+		}
+		return
+	}
+	for i := range n.Children {
+		collectMissingCost(&n.Children[i], seen, out)
+	}
 }
 
 func (s *ProductionService) CalculateBomCostRollup(ctx context.Context, productID int64, laborCost, overheadCost decimal.Decimal) (*dto.BomCostRollupVO, error) {
@@ -775,15 +801,20 @@ func (s *ProductionService) CalculateBomCostRollup(ctx context.Context, productI
 	overhead := decimalx.Money(overheadCost)
 	standardCost := materialCost.Add(labor).Add(overhead)
 
+	missing := make([]dto.MissingCostMaterialVO, 0)
+	collectMissingCost(tree, map[int64]bool{}, &missing)
+
 	return &dto.BomCostRollupVO{
-		ProductID:     m.ID,
-		ProductCode:   m.MaterialCode,
-		ProductName:   m.Name,
-		MaterialCost:  materialCost,
-		LaborCost:     labor,
-		OverheadCost:  overhead,
-		StandardCost:  standardCost,
-		ExplosionTree: tree,
+		ProductID:            m.ID,
+		ProductCode:          m.MaterialCode,
+		ProductName:          m.Name,
+		MaterialCost:         materialCost,
+		LaborCost:            labor,
+		OverheadCost:         overhead,
+		StandardCost:         standardCost,
+		CostPending:          tree != nil && tree.CostPending,
+		MissingCostMaterials: missing,
+		ExplosionTree:        tree,
 	}, nil
 }
 
@@ -817,6 +848,10 @@ func (s *ProductionService) GetCostVariance(ctx context.Context, req dto.CostVar
 
 	if !hasActualCost {
 		return nil, errors.New(50007, 400, "无实际成本数据")
+	}
+	if rollup.CostPending {
+		// 标准成本不完整时计算出的差异没有意义，明确拒绝而不是返回失真的差异率。
+		return nil, errors.New(50008, 400, fmt.Sprintf("标准成本待定：%d 种末级物料缺少成本数据", len(rollup.MissingCostMaterials)))
 	}
 
 	varianceAmount := actualAvgCost.Sub(rollup.StandardCost)
