@@ -281,7 +281,7 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 			mdm.POST("/suppliers-import", middleware.RequirePermission(PermMDMSupplier), d.MDM.ImportSuppliers)
 		}
 
-		// P2 §3.7 单据打印与条码（登录即可用，打印内容由调用方提供）
+		// P3 §4.1 审批工作流（api.md §12）
 		if d.Workflow != nil {
 			wf := api.Group("/workflow")
 			wf.GET("/definitions", middleware.RequirePermission(PermWorkflowDefinition), d.Workflow.ListDefinitions)
@@ -297,6 +297,30 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 			wf.POST("/tasks/:id/reject", middleware.RequirePermission(PermWorkflowTask), d.Workflow.Reject)
 			wf.POST("/tasks/:id/transfer", middleware.RequirePermission(PermWorkflowTask), d.Workflow.Transfer)
 			wf.POST("/tasks/:id/add-sign", middleware.RequirePermission(PermWorkflowTask), d.Workflow.AddSign)
+		}
+
+		// P3 §4.4 站内消息（docs/development/api.md §13.3）
+		if d.Message != nil {
+			msg := api.Group("/messages", middleware.RequirePermission(PermMessageView))
+			msg.GET("", d.Message.List)
+			msg.GET("/unread-count", d.Message.UnreadCount)
+			msg.POST("/read-all", d.Message.MarkAllRead)
+			msg.POST("/:id/read", d.Message.MarkRead)
+			msg.GET("/subscriptions", d.Message.ListSubscriptions)
+			msg.PUT("/subscriptions", d.Message.UpsertSubscription)
+		}
+
+		// P3 §4.2 租户（api.md §13.1）。/admin/tenants 另在 service 层要求调用者属于默认租户 0
+		if d.Tenant != nil {
+			api.GET("/tenant/current", d.Tenant.Current)
+			api.PUT("/tenant/current", middleware.RequirePermission(PermTenantConfig), d.Tenant.UpdateCurrent)
+			adm := api.Group("/admin/tenants", middleware.RequirePermission(PermPlatformTenant))
+			adm.GET("", d.Tenant.List)
+			adm.POST("", d.Tenant.Create)
+			adm.PUT("/:id", d.Tenant.Update)
+			adm.POST("/:id/disable", d.Tenant.Disable)
+			adm.POST("/:id/enable", d.Tenant.Enable)
+			adm.GET("/:id/stats", d.Tenant.Stats)
 		}
 
 		// P2 §3.7 单据打印与条码（登录即可用，打印内容由调用方提供）
