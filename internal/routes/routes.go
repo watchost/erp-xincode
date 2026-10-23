@@ -15,6 +15,7 @@ import (
 	openapiMiddleware "erp-system/internal/openapi/middleware"
 	"erp-system/internal/pkg/middleware"
 	"erp-system/internal/pkg/printer"
+	"erp-system/internal/workflow"
 	productionHandler "erp-system/internal/production/handler"
 	purchaseHandler "erp-system/internal/purchase/handler"
 	salesHandler "erp-system/internal/sales/handler"
@@ -53,6 +54,9 @@ const (
 	PermPurchaseOrderView    = "purchase:order:view"
 	PermPurchaseOrderCreate  = "purchase:order:create"
 	PermPurchaseOrderApprove = "purchase:order:approve"
+	PermPurchaseOrderSubmit  = "purchase:order:submit"
+	PermWorkflowTask         = "workflow:task"
+	PermWorkflowDefinition   = "workflow:definition"
 	PermPurchaseOrderCancel  = "purchase:order:cancel"
 	PermPurchaseInbound      = "purchase:inbound"
 
@@ -122,6 +126,7 @@ type Deps struct {
 	LLM          *llmHandler.LLMHandler
 	OpenAPI      *openapiHandler.OpenAPIHandler
 	Printer      *printer.PrinterHandler
+	Workflow     *workflow.Handler
 }
 
 // RegisterRoutes wires all HTTP endpoints.
@@ -266,6 +271,24 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 		}
 
 		// P2 §3.7 单据打印与条码（登录即可用，打印内容由调用方提供）
+		if d.Workflow != nil {
+			wf := api.Group("/workflow")
+			wf.GET("/definitions", middleware.RequirePermission(PermWorkflowDefinition), d.Workflow.ListDefinitions)
+			wf.POST("/definitions", middleware.RequirePermission(PermWorkflowDefinition), d.Workflow.CreateDefinition)
+			wf.POST("/definitions/:id/deploy", middleware.RequirePermission(PermWorkflowDefinition), d.Workflow.DeployDefinition)
+			wf.POST("/instances/start", middleware.RequirePermission(PermWorkflowTask), d.Workflow.Start)
+			wf.GET("/instances/by-biz", middleware.RequirePermission(PermWorkflowTask), d.Workflow.ByBiz)
+			wf.GET("/instances/:no", middleware.RequirePermission(PermWorkflowTask), d.Workflow.GetInstance)
+			wf.POST("/instances/:no/cancel", middleware.RequirePermission(PermWorkflowTask), d.Workflow.Cancel)
+			wf.GET("/tasks/todo", middleware.RequirePermission(PermWorkflowTask), d.Workflow.Todo)
+			wf.GET("/tasks/done", middleware.RequirePermission(PermWorkflowTask), d.Workflow.Done)
+			wf.POST("/tasks/:id/approve", middleware.RequirePermission(PermWorkflowTask), d.Workflow.Approve)
+			wf.POST("/tasks/:id/reject", middleware.RequirePermission(PermWorkflowTask), d.Workflow.Reject)
+			wf.POST("/tasks/:id/transfer", middleware.RequirePermission(PermWorkflowTask), d.Workflow.Transfer)
+			wf.POST("/tasks/:id/add-sign", middleware.RequirePermission(PermWorkflowTask), d.Workflow.AddSign)
+		}
+
+		// P2 §3.7 单据打印与条码（登录即可用，打印内容由调用方提供）
 		if d.Printer != nil {
 			printG := api.Group("/print")
 			printG.POST("/document", d.Printer.RenderDocument)
@@ -315,6 +338,7 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 			purchase.GET("/orders", middleware.RequirePermission(PermPurchaseOrderView), d.Purchase.ListOrders)
 			purchase.POST("/orders", middleware.RequirePermission(PermPurchaseOrderCreate), d.Purchase.CreateOrder)
 			purchase.POST("/orders/:order_no/approve", middleware.RequirePermission(PermPurchaseOrderApprove), d.Purchase.ApproveOrder)
+			purchase.POST("/orders/:order_no/submit", middleware.RequirePermission(PermPurchaseOrderSubmit), d.Purchase.SubmitOrder)
 			purchase.POST("/orders/:order_no/cancel", middleware.RequirePermission(PermPurchaseOrderCancel), d.Purchase.CancelOrder)
 			purchase.POST("/inbound/scan", middleware.RequirePermission(PermPurchaseInbound), d.Purchase.InboundScan)
 		}

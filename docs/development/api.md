@@ -179,9 +179,57 @@ new_avg = (old_avg * old_qty + unit_cost * in_qty) / (old_qty + in_qty)
 
 OpenAPI 独立 Bearer token 校验、scope、client_secret 哈希、SSRF 防护仍待补。
 
-## 12. 后续模块
+## 12. 审批工作流 `/workflow`（P3 §4.1，2026-10-23 后端已实现）
+
+> 前端任务 6（流程审批、待办、通知铃铛）以本节为准。统一响应 `{code, data, message}`；列表接口返回分页结构 `{list, total, page, page_size}`（与现有 `response.Page` 一致）。
+
+### 12.1 接口
+
+| 方法 | 路径 | 权限 | 请求 | 说明 |
+|---|---|---|---|---|
+| GET | /workflow/definitions?code= | `workflow:definition` | — | 流程定义列表（按 code、版本倒序） |
+| POST | /workflow/definitions | `workflow:definition` | `{code, name, definition}` | 新建定义，自动生成下一版本号，状态=草稿(0)；定义 JSON 会被校验 |
+| POST | /workflow/definitions/:id/deploy | `workflow:definition` | — | 部署该版本（状态=1），同 code 其他已部署版本自动停用(2)；运行中的实例继续按原版本流转 |
+| POST | /workflow/instances/start | `workflow:task` | `{biz_type, biz_no, variables?}` | 通用启动；返回 `{instance_no, status, current_node}`。采购订单请用 `/purchase/orders/:order_no/submit` |
+| GET | /workflow/instances/by-biz?biz_type=&biz_no= | `workflow:task` | — | 单据最近一次实例号 `{instance_no}`（没有时为空串），用于单据详情页跳转审批历史 |
+| GET | /workflow/instances/:no | `workflow:task` | — | 审批历史：`{instance, tasks[], approvals[]}` |
+| POST | /workflow/instances/:no/cancel | `workflow:task` | `{comment?}` | 发起人撤销（非发起人返回 80011） |
+| GET | /workflow/tasks/todo?page=&page_size= | `workflow:task` | — | 我的待办（仅运行中实例的待办） |
+| GET | /workflow/tasks/done?page=&page_size= | `workflow:task` | — | 我的已办（已通过/已转办/已驳回） |
+| POST | /workflow/tasks/:id/approve | `workflow:task` | `{comment?}` | 通过 |
+| POST | /workflow/tasks/:id/reject | `workflow:task` | `{comment}` | 驳回，意见必填（80008） |
+| POST | /workflow/tasks/:id/transfer | `workflow:task` | `{target_user_id, comment?}` | 转办 |
+| POST | /workflow/tasks/:id/add-sign | `workflow:task` | `{target_user_id, comment?}` | 加签（加签后本节点变为会签） |
+| POST | /purchase/orders/:order_no/submit | `purchase:order:submit` | — | 采购草稿单提交审批：订单 10→15（审批中），同事务启动流程，返回 `{instance_no}` |
+
+待办列表项字段（`TaskVO`）：`task_id, instance_no, biz_type, biz_no, node_code, node_name, sign_mode, status, starter_id, instance_status, created_at, finished_at`。
+
+### 12.2 状态与错误码
+
+- 实例 `status`：1 审批中，2 通过，3 驳回，4 撤销。
+- 任务 `status`：1 待办，2 已通过，3 已转办，4 已驳回，5 已取消（或签他人已处理/流程结束）。
+- 采购订单新增状态 **15 审批中**；驳回或撤销退回 10 草稿；全部通过后在同一事务执行原审批逻辑（占用预算）→ 20 已审批。
+- 已部署 `purchase_order` 流程时，`POST /purchase/orders/:order_no/approve` 直接审批返回 **40010**。
+- 错误码：80001 定义不存在｜80002 无已部署定义｜80003 实例不存在｜80004 任务不存在｜80005 非审批人｜80006 任务已处理｜80007 单据已有运行中流程｜80008 驳回意见必填｜80009 找不到可用审批人｜80010 定义不合法｜80011 非发起人撤销｜80012 转办/加签目标无效。
+
+### 12.3 定义 JSON 与审批人规则
+
+当前版本支持 `start` / `approval` / `end` 三种节点，按数组顺序流转；审批节点可带 `condition`（`field` 取启动变量，如采购单的 `amount`；不满足则跳过本节点；缺少变量时不跳过）。`cc`、`parallel`、独立 `condition` 分支节点**尚未实现**，定义中出现会被拒绝。
+
+| `assignee.type` | `value` | 解析口径 |
+|---|---|---|
+| `user` | 用户 ID 或 ID 数组 | 指定人 |
+| `role` | 角色 code | 该角色全部用户 |
+| `dept_leader` | — | 发起人所在部门负责人；发起人本人是负责人时向上取上级部门负责人 |
+| `initiator_leader` | — | 发起人上级。`sys_user` 没有直属上级字段，按部门负责人口径实现（同 `dept_leader`） |
+| `dept_leader_up` | — | 上级部门负责人 |
+
+只会分配给存在、启用、未删除的用户；解析结果为空时启动或流转失败（80009）并整体回滚，不会静默跳过节点。
+
+默认部署：`purchase_order` v1 = 部门负责人（或签）→ 管理层角色 `manager`（或签）。
+
+## 13. 后续模块
 
 - 销售 `/sales`：P2，详见 [features/sales.md](features/sales.md#3-接口)。
-- 审批工作流 `/workflow`：P3，详见 [features/workflow.md](features/workflow.md#4-接口)。
 - 消息 `/messages`：P3，支持未读数、单条已读、全部已读。
 - 附件 `/attachments`：P3，支持上传、下载和业务关联查询。

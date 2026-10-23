@@ -26,6 +26,7 @@ import (
 	"erp-system/internal/pkg/middleware"
 	migratetool "erp-system/internal/pkg/migrate"
 	"erp-system/internal/pkg/printer"
+	"erp-system/internal/workflow"
 	"erp-system/internal/pkg/redis"
 	"erp-system/internal/routes"
 
@@ -219,6 +220,12 @@ func main() {
 	// 采购单/工单列表套用 IAM 5 档数据权限；单据 dept_id 创建时取自 claims。
 	purchaseSvc.SetDataScopeResolver(iamSvc)
 
+	// P3 §4.1 审批工作流：采购订单接入 2 级审批（回调在审批事务内执行原审批逻辑）
+	workflowSvc := workflow.NewService(dbConn)
+	workflowSvc.Register(purchaseService.BizTypePurchaseOrder, purchaseSvc)
+	purchaseSvc.SetWorkflow(workflow.BizGateway{S: workflowSvc})
+	workflowH := workflow.NewHandler(workflowSvc)
+
 	// 销售模块（P2 §3.1）：订单/出库/退货，与采购对称。
 	salesOrderRepo := salesRepository.NewSalesOrderRepository(dbConn)
 	salesOutboundRepo := salesRepository.NewSalesOutboundRepository(dbConn)
@@ -376,6 +383,7 @@ func main() {
 		LLM:          llmH,
 		OpenAPI:      openapiH,
 		Printer:      printer.NewPrinterHandler(),
+		Workflow:     workflowH,
 		OpenAPIAuth:  openapiMiddleware.BearerAuth(openapiSvc.ValidateAccessToken),
 	})
 

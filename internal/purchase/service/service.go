@@ -30,6 +30,7 @@ import (
 const (
 	// 状态码与库表 DEFAULT 统一（迁移 0010）：10 草稿 → 20 已审批 → 30 部分收货 → 40 已完成；50 已取消。
 	OrderStatusDraft             = 10
+	OrderStatusPendingApproval   = 15 // P3 §4.1：已提交，审批流程进行中
 	OrderStatusApproved          = 20
 	OrderStatusPartiallyReceived = 30
 	OrderStatusCompleted         = 40
@@ -64,6 +65,7 @@ type PurchaseService struct {
 		Acquire(ctx context.Context, scope, key string) error
 	}
 	scopeResolver DataScopeResolver // 可选：未装配时列表不做数据权限过滤（测试/内部调用）
+	workflow      WorkflowGateway   // 可选：P3 审批工作流；未装配时沿用直接审批
 }
 
 // SetDataScopeResolver 装配数据权限解析器（main 中注入 IAMService）。
@@ -173,11 +175,28 @@ func (s *PurchaseService) CreateOrder(ctx context.Context, req dto.CreatePurchas
 
 func (s *PurchaseService) ApproveOrder(ctx context.Context, orderNo string) error {
 	return s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
+		// 已部署采购审批流时，不允许绕过流程直接审批
+		if s.workflow != nil {
+			deployed, err := s.workflow.HasDeployed(ctx, tx, BizTypePurchaseOrder)
+			if err != nil {
+				return err
+			}
+			if deployed {
+				return errors.New(40010, 409, "采购订单已启用审批流程，请通过「提交审批」走流程")
+			}
+		}
+		return s.approveOrderTx(ctx, tx, orderNo, OrderStatusDraft)
+	})
+}
+
+// approveOrderTx 原审批逻辑（预算占用 + 状态改为已审批），fromStatus 为允许的前置状态。
+func (s *PurchaseService) approveOrderTx(ctx context.Context, tx *gorm.DB, orderNo string, fromStatus int) error {
+	{
 		order, err := s.orderRepo.FindByOrderNoForUpdate(tx, orderNo)
 		if err != nil {
 			return errors.New(40001, 404, "采购订单不存在")
 		}
-		if order.Status != OrderStatusDraft {
+		if order.Status != fromStatus {
 			return errors.New(40004, 409, "订单状态不允许审批")
 		}
 
@@ -191,7 +210,62 @@ func (s *PurchaseService) ApproveOrder(ctx context.Context, orderNo string) erro
 			"approved_at": time.Now(),
 			"approved_by": auth.UserIDFromContext(ctx),
 		})
+	}
+}
+
+// ---- P3 §4.1 审批工作流接入 ----
+
+const BizTypePurchaseOrder = "purchase_order"
+
+// WorkflowGateway 是采购需要的工作流能力（窄接口，避免 purchase 依赖 workflow 包）。
+type WorkflowGateway interface {
+	HasDeployed(ctx context.Context, tx *gorm.DB, bizType string) (bool, error)
+	StartTx(ctx context.Context, tx *gorm.DB, bizType, bizNo string, vars map[string]decimal.Decimal) (string, error)
+	CancelByBizTx(ctx context.Context, tx *gorm.DB, bizType, bizNo string) error
+}
+
+func (s *PurchaseService) SetWorkflow(w WorkflowGateway) { s.workflow = w }
+
+// SubmitOrder 草稿 → 审批中，并在同一事务启动采购审批流程（变量 amount = 订单总额）。返回流程实例号。
+func (s *PurchaseService) SubmitOrder(ctx context.Context, orderNo string) (string, error) {
+	if s.workflow == nil {
+		return "", errors.New(40011, 400, "审批工作流未启用")
+	}
+	var instNo string
+	err := s.txManager.WithTx(ctx, func(tx *gorm.DB) error {
+		order, err := s.orderRepo.FindByOrderNoForUpdate(tx, orderNo)
+		if err != nil {
+			return errors.New(40001, 404, "采购订单不存在")
+		}
+		if order.Status != OrderStatusDraft {
+			return errors.New(40004, 409, "仅草稿订单可提交审批")
+		}
+		if err := s.orderRepo.UpdateOrderStatus(tx, order.ID, OrderStatusPendingApproval, nil); err != nil {
+			return err
+		}
+		instNo, err = s.workflow.StartTx(ctx, tx, BizTypePurchaseOrder, orderNo,
+			map[string]decimal.Decimal{"amount": order.TotalAmount})
+		return err
 	})
+	return instNo, err
+}
+
+// OnApproved 工作流全部通过：在同一事务内执行原审批逻辑（预算占用 → 已审批）。
+// 预算不足时返回错误，最后一级审批动作整体回滚，订单仍为审批中，待办仍在。
+func (s *PurchaseService) OnApproved(ctx context.Context, tx *gorm.DB, bizNo string) error {
+	return s.approveOrderTx(ctx, tx, bizNo, OrderStatusPendingApproval)
+}
+
+// OnRejected 驳回/撤销：订单退回草稿，可修改后重新提交。
+func (s *PurchaseService) OnRejected(ctx context.Context, tx *gorm.DB, bizNo string, reason string) error {
+	order, err := s.orderRepo.FindByOrderNoForUpdate(tx, bizNo)
+	if err != nil {
+		return errors.New(40001, 404, "采购订单不存在")
+	}
+	if order.Status != OrderStatusPendingApproval {
+		return errors.New(40004, 409, "订单不在审批中")
+	}
+	return s.orderRepo.UpdateOrderStatus(tx, order.ID, OrderStatusDraft, nil)
 }
 
 // CancelOrder 取消采购订单。
@@ -208,6 +282,14 @@ func (s *PurchaseService) CancelOrder(ctx context.Context, orderNo string) error
 
 		switch order.Status {
 		case OrderStatusDraft:
+			return s.orderRepo.UpdateOrderStatus(tx, order.ID, OrderStatusCanceled, nil)
+		case OrderStatusPendingApproval:
+			// 审批中取消：同事务撤销运行中的流程（尚未占用预算）
+			if s.workflow != nil {
+				if err := s.workflow.CancelByBizTx(ctx, tx, BizTypePurchaseOrder, orderNo); err != nil {
+					return err
+				}
+			}
 			return s.orderRepo.UpdateOrderStatus(tx, order.ID, OrderStatusCanceled, nil)
 		case OrderStatusApproved, OrderStatusPartiallyReceived:
 			items, err := s.orderRepo.FindItems(order.ID)
@@ -288,6 +370,8 @@ func (s *PurchaseService) buildOrderVO(order *model.PurPurchaseOrder, items []mo
 		statusDesc = "已取消"
 	case OrderStatusPartiallyReceived:
 		statusDesc = "部分收货"
+	case OrderStatusPendingApproval:
+		statusDesc = "审批中"
 	}
 	return &dto.PurchaseOrderVO{
 		ID:           order.ID,

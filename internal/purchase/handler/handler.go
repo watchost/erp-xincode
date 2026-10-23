@@ -45,6 +45,21 @@ func (h *PurchaseHandler) ApproveOrder(c *gin.Context) {
 	response.Success(c, nil)
 }
 
+// SubmitOrder 草稿订单提交审批（P3 §4.1），返回流程实例号。
+func (h *PurchaseHandler) SubmitOrder(c *gin.Context) {
+	orderNo := c.Param("order_no")
+	if orderNo == "" {
+		response.BadRequest(c, "订单号不能为空")
+		return
+	}
+	instNo, err := h.purchaseService.SubmitOrder(c.Request.Context(), orderNo)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.Success(c, gin.H{"instance_no": instNo})
+}
+
 func (h *PurchaseHandler) CancelOrder(c *gin.Context) {
 	orderNo := c.Param("order_no")
 	if orderNo == "" {
