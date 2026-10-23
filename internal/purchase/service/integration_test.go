@@ -317,6 +317,12 @@ func (failingFinance) PostTx(ctx context.Context, tx *gorm.DB, in financeService
 	_ = in
 	return errors.New("finance posting unavailable（故障注入）")
 }
+func (failingFinance) CreateReceivableTx(ctx context.Context, tx *gorm.DB, in financeService.ReceivableInput) error {
+	return nil
+}
+func (failingFinance) CreatePayableTx(ctx context.Context, tx *gorm.DB, in financeService.PayableInput) error {
+	return nil
+}
 func (failingFinance) ReserveBudgetTx(ctx context.Context, tx *gorm.DB, budgetType string, amount decimal.Decimal) error {
 	return nil
 }

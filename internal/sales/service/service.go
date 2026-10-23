@@ -557,7 +557,6 @@ func (s *SalesService) OutboundScan(ctx context.Context, req dto.SalesOutboundSc
 
 		// 确认应收：借 应收账款（1122）/ 贷 主营业务收入（6001）。
 		// 收入口径与订单行一致：qty*price*(1-discount)，按金额标度归整。
-		// TODO(P2 §3.5)：同步生成 fin_receivable 应收单，税率/应交税费随应收模块落地。
 		revenue := decimalx.Money(reqQty.Mul(locked.Price).Mul(decimal.NewFromInt(1).Sub(locked.Discount)))
 		if revenue.IsPositive() {
 			if err := s.finance.PostTx(ctx, tx, financeService.PostingInput{
@@ -569,6 +568,19 @@ func (s *SalesService) OutboundScan(ctx context.Context, req dto.SalesOutboundSc
 					{AccountCode: financeService.AccountReceivable, AccountName: "应收账款", Debit: revenue},
 					{AccountCode: financeService.AccountMainRevenue, AccountName: "主营业务收入", Credit: revenue},
 				},
+			}); err != nil {
+				return err
+			}
+
+			// 同事务同步生成 fin_receivable 应收单
+			if err := s.finance.CreateReceivableTx(ctx, tx, financeService.ReceivableInput{
+				CustomerID: order.CustomerID,
+				SourceType: 1, // 销售出库
+				SourceNo:   outboundNo,
+				Amount:     revenue,
+				DueAt:      time.Now().AddDate(0, 0, 30),
+				Period:     time.Now().Format("2006-01"),
+				Remark:     fmt.Sprintf("销售出库单 %s 自动生成应收单", outboundNo),
 			}); err != nil {
 				return err
 			}

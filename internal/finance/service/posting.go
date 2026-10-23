@@ -89,10 +89,104 @@ type PostingInput struct {
 	CostCards   []CostCardInput // 同事务写入的成本卡（可为空）
 }
 
-// Poster 由业务服务（采购/生产）依赖，在各自的事务内调用以完成财务过账。
+// ReceivableInput 销售出库在同事务内生成应收单输入。
+type ReceivableInput struct {
+	CustomerID int64
+	SourceType int16
+	SourceNo   string
+	Amount     decimal.Decimal
+	DueAt      time.Time
+	Period     string
+	Remark     string
+	TenantID   int64
+}
+
+// PayableInput 采购入库在同事务内生成应付单输入。
+type PayableInput struct {
+	SupplierID int64
+	SourceType int16
+	SourceNo   string
+	Amount     decimal.Decimal
+	DueAt      time.Time
+	Period     string
+	Remark     string
+	TenantID   int64
+}
+
+// Poster 由业务服务（采购/生产/销售）依赖，在各自的事务内调用以完成财务过账与应收应付生成。
 // 抽成接口避免业务服务直接依赖 FinanceService 的具体实现。
 type Poster interface {
 	PostTx(ctx context.Context, tx *gorm.DB, in PostingInput) error
+	CreateReceivableTx(ctx context.Context, tx *gorm.DB, in ReceivableInput) error
+	CreatePayableTx(ctx context.Context, tx *gorm.DB, in PayableInput) error
+}
+
+func (s *FinanceService) CreateReceivableTx(ctx context.Context, tx *gorm.DB, in ReceivableInput) error {
+	if in.Amount.IsZero() || in.Amount.IsNegative() {
+		return nil
+	}
+	dueAt := in.DueAt
+	if dueAt.IsZero() {
+		dueAt = time.Now().AddDate(0, 0, 30)
+	}
+	period := in.Period
+	if period == "" {
+		period = time.Now().Format("2006-01")
+	}
+	recvNo := s.generateNo(ctx, "AR")
+	recv := &model.FinReceivable{
+		ReceivableNo:   recvNo,
+		CustomerID:     in.CustomerID,
+		SourceType:     in.SourceType,
+		SourceNo:       in.SourceNo,
+		Amount:         decimalx.Money(in.Amount),
+		ReceivedAmount: decimal.Zero,
+		DueAt:          dueAt,
+		Period:         period,
+		Status:         model.BillStatusPending,
+		Remark:         in.Remark,
+		TenantID:       in.TenantID,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+	if s.recvRepo != nil {
+		return s.recvRepo.Create(tx, recv)
+	}
+	return nil
+}
+
+func (s *FinanceService) CreatePayableTx(ctx context.Context, tx *gorm.DB, in PayableInput) error {
+	if in.Amount.IsZero() || in.Amount.IsNegative() {
+		return nil
+	}
+	dueAt := in.DueAt
+	if dueAt.IsZero() {
+		dueAt = time.Now().AddDate(0, 0, 30)
+	}
+	period := in.Period
+	if period == "" {
+		period = time.Now().Format("2006-01")
+	}
+	payNo := s.generateNo(ctx, "AP")
+	pay := &model.FinPayable{
+		PayableNo:   payNo,
+		SupplierID:  in.SupplierID,
+		SourceType:  in.SourceType,
+		SourceNo:    in.SourceNo,
+		Amount:      decimalx.Money(in.Amount),
+		PaidAmount:  decimal.Zero,
+		DueAt:       dueAt,
+		Period:      period,
+		Status:      model.BillStatusPending,
+		Remark:      in.Remark,
+		TenantID:    in.TenantID,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+	if s.payRepo != nil {
+		return s.payRepo.Create(tx, pay)
+	}
+	return nil
 }
 
 // PostTx 在调用方提供的事务内过账：校验借贷平衡 → 生成凭证号 → 写双分录 → 写成本卡。

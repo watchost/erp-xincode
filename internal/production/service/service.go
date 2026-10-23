@@ -741,8 +741,13 @@ func (s *ProductionService) explodeNode(ctx context.Context, materialID int64, b
 		node.SubtotalCost = totalMaterialCost
 		node.StandardCost = totalMaterialCost
 	} else {
-		// 末级原材料默认取基准成本
-		unitCost := decimal.NewFromInt(10)
+		// 末级原材料：取库存移动加权成本真实值；若无成本数据则记为 0
+		var unitCost decimal.Decimal
+		if s.warehouseService != nil {
+			if cost, ok, _ := s.warehouseService.GetMaterialAvgCost(ctx, materialID); ok && cost.IsPositive() {
+				unitCost = cost
+			}
+		}
 		node.StandardCost = unitCost
 		node.SubtotalCost = unitCost.Mul(baseQty)
 		totalMaterialCost = unitCost
@@ -793,8 +798,27 @@ func (s *ProductionService) GetCostVariance(ctx context.Context, req dto.CostVar
 		return nil, err
 	}
 
-	// 实际平均成本：查询已完工工单或入库记录的平均单位成本
-	actualAvgCost := rollup.StandardCost.Mul(decimal.NewFromFloat(1.05)) // 实际略有波动作为分析基准
+	// 实际平均成本：优先查询完工生产入库单实际加权单价，次选库存移动加权均价
+	var actualAvgCost decimal.Decimal
+	var hasActualCost bool
+
+	if s.receiptRepo != nil {
+		if cost, ok, _ := s.receiptRepo.GetAvgUnitCostByMaterialID(req.ProductID); ok && cost.IsPositive() {
+			actualAvgCost = cost
+			hasActualCost = true
+		}
+	}
+	if !hasActualCost && s.warehouseService != nil {
+		if cost, ok, _ := s.warehouseService.GetMaterialAvgCost(ctx, req.ProductID); ok && cost.IsPositive() {
+			actualAvgCost = cost
+			hasActualCost = true
+		}
+	}
+
+	if !hasActualCost {
+		return nil, errors.New(50007, 400, "无实际成本数据")
+	}
+
 	varianceAmount := actualAvgCost.Sub(rollup.StandardCost)
 	varianceRate := decimal.Zero
 	if rollup.StandardCost.IsPositive() {

@@ -25,6 +25,7 @@ import (
 	"erp-system/internal/pkg/metrics"
 	"erp-system/internal/pkg/middleware"
 	migratetool "erp-system/internal/pkg/migrate"
+	"erp-system/internal/pkg/printer"
 	"erp-system/internal/pkg/redis"
 	"erp-system/internal/routes"
 
@@ -374,6 +375,7 @@ func main() {
 		Device:       deviceH,
 		LLM:          llmH,
 		OpenAPI:      openapiH,
+		Printer:      printer.NewPrinterHandler(),
 		OpenAPIAuth:  openapiMiddleware.BearerAuth(openapiSvc.ValidateAccessToken),
 	})
 

@@ -14,6 +14,7 @@ import (
 	openapiHandler "erp-system/internal/openapi/handler"
 	openapiMiddleware "erp-system/internal/openapi/middleware"
 	"erp-system/internal/pkg/middleware"
+	"erp-system/internal/pkg/printer"
 	productionHandler "erp-system/internal/production/handler"
 	purchaseHandler "erp-system/internal/purchase/handler"
 	salesHandler "erp-system/internal/sales/handler"
@@ -73,7 +74,9 @@ const (
 	PermFinanceAccount = "finance:account"
 
 	PermFinanceReceivableView   = "finance:receivable:view"
+	PermFinanceReceivableCreate = "finance:receivable:create"
 	PermFinancePayableView      = "finance:payable:view"
+	PermFinancePayableCreate    = "finance:payable:create"
 	PermFinanceReceiptView      = "finance:receipt:view"
 	PermFinanceReceiptCreate    = "finance:receipt:create"
 	PermFinancePaymentView      = "finance:payment:view"
@@ -118,6 +121,7 @@ type Deps struct {
 	Device       *deviceHandler.DeviceHandler
 	LLM          *llmHandler.LLMHandler
 	OpenAPI      *openapiHandler.OpenAPIHandler
+	Printer      *printer.PrinterHandler
 }
 
 // RegisterRoutes wires all HTTP endpoints.
@@ -251,6 +255,21 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 			mdm.GET("/customers/:id", middleware.RequirePermission(PermMDMCustomer), d.MDM.GetCustomer)
 			mdm.PUT("/customers/:id", middleware.RequirePermission(PermMDMCustomer), d.MDM.UpdateCustomer)
 			mdm.DELETE("/customers/:id", middleware.RequirePermission(PermMDMCustomer), d.MDM.DeleteCustomer)
+
+			// P2 §3.7 主数据 CSV 导入导出（UTF-8 BOM）
+			mdm.GET("/materials-export", middleware.RequirePermission(PermMDMMaterial), d.MDM.ExportMaterials)
+			mdm.POST("/materials-import", middleware.RequirePermission(PermMDMMaterial), d.MDM.ImportMaterials)
+			mdm.GET("/customers-export", middleware.RequirePermission(PermMDMCustomer), d.MDM.ExportCustomers)
+			mdm.POST("/customers-import", middleware.RequirePermission(PermMDMCustomer), d.MDM.ImportCustomers)
+			mdm.GET("/suppliers-export", middleware.RequirePermission(PermMDMSupplier), d.MDM.ExportSuppliers)
+			mdm.POST("/suppliers-import", middleware.RequirePermission(PermMDMSupplier), d.MDM.ImportSuppliers)
+		}
+
+		// P2 §3.7 单据打印与条码（登录即可用，打印内容由调用方提供）
+		if d.Printer != nil {
+			printG := api.Group("/print")
+			printG.POST("/document", d.Printer.RenderDocument)
+			printG.GET("/barcode", d.Printer.RenderBarcodeSVG)
 		}
 
 		warehouse := api.Group("/warehouse")
@@ -352,11 +371,11 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 
 			// 应收应付与对账
 			finance.GET("/receivables", middleware.RequirePermission(PermFinanceReceivableView), d.Finance.ListReceivables)
-			finance.POST("/receivables", middleware.RequirePermission(PermFinanceReceivableView), d.Finance.CreateReceivable)
+			finance.POST("/receivables", middleware.RequirePermission(PermFinanceReceivableCreate), d.Finance.CreateReceivable)
 			finance.GET("/receivables/:id", middleware.RequirePermission(PermFinanceReceivableView), d.Finance.GetReceivable)
 
 			finance.GET("/payables", middleware.RequirePermission(PermFinancePayableView), d.Finance.ListPayables)
-			finance.POST("/payables", middleware.RequirePermission(PermFinancePayableView), d.Finance.CreatePayable)
+			finance.POST("/payables", middleware.RequirePermission(PermFinancePayableCreate), d.Finance.CreatePayable)
 			finance.GET("/payables/:id", middleware.RequirePermission(PermFinancePayableView), d.Finance.GetPayable)
 
 			finance.GET("/receipts", middleware.RequirePermission(PermFinanceReceiptView), d.Finance.ListReceipts)

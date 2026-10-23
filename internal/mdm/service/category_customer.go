@@ -3,13 +3,18 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"sort"
 	"strconv"
+	"strings"
+
+	"github.com/shopspring/decimal"
 
 	"erp-system/internal/mdm/dto"
 	"erp-system/internal/mdm/model"
+	"erp-system/internal/pkg/excel"
 	"erp-system/internal/pkg/errors"
 	"gorm.io/gorm"
 )
@@ -253,4 +258,104 @@ func buildCustomerVO(c *model.MdmCustomer) dto.CustomerVO {
 		Status:       c.Status,
 		CreatedAt:    c.CreatedAt.Format("2006-01-02 15:04:05"),
 	}
+}
+
+func (s *MDMService) ExportCustomersCSV(ctx context.Context, req dto.CustomerListReq) ([]byte, error) {
+	req.Page = 1
+	req.PageSize = 10000
+	list, _, err := s.ListCustomers(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	headers := []string{"客户编码", "客户名称", "联系人", "联系电话", "联系地址", "信用额度"}
+	rows := make([][]string, 0, len(list))
+	for _, c := range list {
+		rows = append(rows, []string{
+			c.CustomerCode,
+			c.Name,
+			c.Contact,
+			c.Phone,
+			c.Address,
+			c.CreditLimit.String(),
+		})
+	}
+	return excel.ExportCSV(headers, rows)
+}
+
+func (s *MDMService) ImportCustomersCSV(ctx context.Context, data []byte) (int, error) {
+	_, rows, err := excel.ImportCSV(bytes.NewReader(data))
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, row := range rows {
+		if len(row) < 2 || strings.TrimSpace(row[0]) == "" || strings.TrimSpace(row[1]) == "" {
+			continue
+		}
+		c := &model.MdmCustomer{
+			CustomerCode: strings.TrimSpace(row[0]),
+			Name:         strings.TrimSpace(row[1]),
+		}
+		if len(row) > 2 {
+			c.Contact = strings.TrimSpace(row[2])
+		}
+		if len(row) > 3 {
+			c.Phone = strings.TrimSpace(row[3])
+		}
+		if len(row) > 4 {
+			c.Address = strings.TrimSpace(row[4])
+		}
+		if len(row) > 5 {
+			if d, err := decimal.NewFromString(strings.TrimSpace(row[5])); err == nil {
+				c.CreditLimit = d
+			}
+		}
+		if err := s.CreateCustomer(ctx, c); err == nil {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (s *MDMService) ExportSuppliersCSV(ctx context.Context, req dto.SupplierListReq) ([]byte, error) {
+	req.Page = 1
+	req.PageSize = 10000
+	list, _, err := s.ListSuppliers(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	headers := []string{"供应商编码", "供应商名称", "联系人"}
+	rows := make([][]string, 0, len(list))
+	for _, sup := range list {
+		rows = append(rows, []string{
+			sup.SupplierCode,
+			sup.Name,
+			sup.Contact,
+		})
+	}
+	return excel.ExportCSV(headers, rows)
+}
+
+func (s *MDMService) ImportSuppliersCSV(ctx context.Context, data []byte) (int, error) {
+	_, rows, err := excel.ImportCSV(bytes.NewReader(data))
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, row := range rows {
+		if len(row) < 2 || strings.TrimSpace(row[0]) == "" || strings.TrimSpace(row[1]) == "" {
+			continue
+		}
+		sup := &model.MdmSupplier{
+			SupplierCode: strings.TrimSpace(row[0]),
+			Name:         strings.TrimSpace(row[1]),
+		}
+		if len(row) > 2 {
+			sup.Contact = strings.TrimSpace(row[2])
+		}
+		if err := s.CreateSupplier(ctx, sup); err == nil {
+			count++
+		}
+	}
+	return count, nil
 }

@@ -30,6 +30,7 @@ type WorkOrderRepository interface {
 type ProductionReceiptRepository interface {
 	Create(tx *gorm.DB, receipt *model.ProProductionReceipt) error
 	List(workOrderID int64, page, pageSize int) ([]model.ProProductionReceipt, int64, error)
+	GetAvgUnitCostByMaterialID(materialID int64) (decimal.Decimal, bool, error)
 }
 
 type BomRepository interface {
@@ -231,4 +232,22 @@ func (r *productionReceiptRepo) List(workOrderID int64, page, pageSize int) ([]m
 		return nil, 0, err
 	}
 	return list, total, nil
+}
+
+func (r *productionReceiptRepo) GetAvgUnitCostByMaterialID(materialID int64) (decimal.Decimal, bool, error) {
+	var result struct {
+		TotalQty  decimal.Decimal
+		TotalCost decimal.Decimal
+	}
+	err := r.db.Model(&model.ProProductionReceipt{}).
+		Select("COALESCE(SUM(qty), 0) as total_qty, COALESCE(SUM(qty * unit_cost), 0) as total_cost").
+		Where("material_id = ? AND qty > 0", materialID).
+		Scan(&result).Error
+	if err != nil {
+		return decimal.Zero, false, err
+	}
+	if result.TotalQty.IsPositive() {
+		return result.TotalCost.Div(result.TotalQty), true, nil
+	}
+	return decimal.Zero, false, nil
 }

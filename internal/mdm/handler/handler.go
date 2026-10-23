@@ -3,6 +3,7 @@
 package handler
 
 import (
+	"io"
 	"net/http"
 	"strconv"
 
@@ -283,4 +284,74 @@ func (h *MDMHandler) DeleteLocation(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, response.OK(nil))
+}
+
+func (h *MDMHandler) ExportMaterials(c *gin.Context) {
+	req := dto.MaterialListReq{
+		MaterialCode: c.Query("material_code"),
+		Name:         c.Query("name"),
+	}
+	data, err := h.mdmService.ExportMaterialsCSV(c.Request.Context(), req)
+	if err != nil {
+		c.JSON(http.StatusOK, response.FromError(err))
+		return
+	}
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", "attachment; filename=materials.csv")
+	c.Data(http.StatusOK, "text/csv; charset=utf-8", data)
+}
+
+func (h *MDMHandler) ImportMaterials(c *gin.Context) {
+	file, _, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, response.Err(10005, "请上传 CSV 文件"))
+		return
+	}
+	defer file.Close()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, response.Err(10005, "读取文件失败"))
+		return
+	}
+	count, err := h.mdmService.ImportMaterialsCSV(c.Request.Context(), data)
+	if err != nil {
+		c.JSON(http.StatusOK, response.FromError(err))
+		return
+	}
+	c.JSON(http.StatusOK, response.OK(gin.H{"imported_count": count}))
+}
+
+func (h *MDMHandler) ExportSuppliers(c *gin.Context) {
+	req := dto.SupplierListReq{
+		SupplierCode: c.Query("supplier_code"),
+		Name:         c.Query("name"),
+	}
+	data, err := h.mdmService.ExportSuppliersCSV(c.Request.Context(), req)
+	if err != nil {
+		c.JSON(http.StatusOK, response.FromError(err))
+		return
+	}
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", "attachment; filename=suppliers.csv")
+	c.Data(http.StatusOK, "text/csv; charset=utf-8", data)
+}
+
+func (h *MDMHandler) ImportSuppliers(c *gin.Context) {
+	file, _, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, response.Err(10005, "请上传 CSV 文件"))
+		return
+	}
+	defer file.Close()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, response.Err(10005, "读取文件失败"))
+		return
+	}
+	count, err := h.mdmService.ImportSuppliersCSV(c.Request.Context(), data)
+	if err != nil {
+		c.JSON(http.StatusOK, response.FromError(err))
+		return
+	}
+	c.JSON(http.StatusOK, response.OK(gin.H{"imported_count": count}))
 }

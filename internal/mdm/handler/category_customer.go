@@ -3,6 +3,7 @@
 package handler
 
 import (
+	"io"
 	"net/http"
 	"strconv"
 
@@ -124,4 +125,39 @@ func (h *MDMHandler) DeleteCustomer(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, response.OK(nil))
+}
+
+func (h *MDMHandler) ExportCustomers(c *gin.Context) {
+	req := dto.CustomerListReq{
+		CustomerCode: c.Query("customer_code"),
+		Name:         c.Query("name"),
+	}
+	data, err := h.mdmService.ExportCustomersCSV(c.Request.Context(), req)
+	if err != nil {
+		c.JSON(http.StatusOK, response.FromError(err))
+		return
+	}
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", "attachment; filename=customers.csv")
+	c.Data(http.StatusOK, "text/csv; charset=utf-8", data)
+}
+
+func (h *MDMHandler) ImportCustomers(c *gin.Context) {
+	file, _, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, response.Err(10005, "请上传 CSV 文件"))
+		return
+	}
+	defer file.Close()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, response.Err(10005, "读取文件失败"))
+		return
+	}
+	count, err := h.mdmService.ImportCustomersCSV(c.Request.Context(), data)
+	if err != nil {
+		c.JSON(http.StatusOK, response.FromError(err))
+		return
+	}
+	c.JSON(http.StatusOK, response.OK(gin.H{"imported_count": count}))
 }

@@ -353,6 +353,14 @@ func (failingPoster) PostTx(ctx context.Context, tx *gorm.DB, in financeService.
 	return apperrors.New(60004, 500, "注入的过账失败")
 }
 
+func (failingPoster) CreateReceivableTx(ctx context.Context, tx *gorm.DB, in financeService.ReceivableInput) error {
+	return nil
+}
+
+func (failingPoster) CreatePayableTx(ctx context.Context, tx *gorm.DB, in financeService.PayableInput) error {
+	return nil
+}
+
 func TestSalesOutbound_PostingFailureRollsBack(t *testing.T) {
 	gdb := testsupport.NewDB(t)
 	fx := testsupport.CreateFixture(t, gdb, "so5")

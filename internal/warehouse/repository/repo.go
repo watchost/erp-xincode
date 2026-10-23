@@ -25,6 +25,7 @@ type InventoryRepository interface {
 	ExistsLocationInUse(locationID int64) (bool, error)
 	SumAvailableQty(materialID int64) (decimal.Decimal, error)
 	ListByWarehouse(warehouseID int64, locationID *int64) ([]model.InvInventory, error)
+	GetMaterialAvgCost(materialID int64) (decimal.Decimal, bool, error)
 }
 
 type StockLedgerRepository interface {
@@ -188,6 +189,28 @@ func (r *inventoryRepo) ListByWarehouse(warehouseID int64, locationID *int64) ([
 		return nil, err
 	}
 	return list, nil
+}
+
+func (r *inventoryRepo) GetMaterialAvgCost(materialID int64) (decimal.Decimal, bool, error) {
+	var result struct {
+		TotalQty  decimal.Decimal
+		TotalCost decimal.Decimal
+	}
+	err := r.db.Model(&model.InvInventory{}).
+		Select("COALESCE(SUM(qty), 0) as total_qty, COALESCE(SUM(qty * avg_cost), 0) as total_cost").
+		Where("material_id = ? AND qty > 0", materialID).
+		Scan(&result).Error
+	if err != nil {
+		return decimal.Zero, false, err
+	}
+	if result.TotalQty.IsPositive() {
+		return result.TotalCost.Div(result.TotalQty), true, nil
+	}
+	var latest model.InvInventory
+	if err := r.db.Where("material_id = ? AND avg_cost > 0", materialID).Order("updated_at DESC").First(&latest).Error; err == nil {
+		return latest.AvgCost, true, nil
+	}
+	return decimal.Zero, false, nil
 }
 
 type stockLedgerRepo struct {

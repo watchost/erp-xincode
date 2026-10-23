@@ -424,6 +424,19 @@ func (s *PurchaseService) InboundScan(ctx context.Context, req dto.PurchaseInbou
 			return err
 		}
 
+		// 同事务生成应付单 (fin_payable)
+		if err := s.finance.CreatePayableTx(ctx, tx, financeService.PayableInput{
+			SupplierID: order.SupplierID,
+			SourceType: 1, // 采购入库
+			SourceNo:   inboundNo,
+			Amount:     amount,
+			DueAt:      time.Now().AddDate(0, 0, 30),
+			Period:     time.Now().Format("2006-01"),
+			Remark:     fmt.Sprintf("采购入库 %s（订单 %s）自动生成应付单", inboundNo, req.OrderNo),
+		}); err != nil {
+			return err
+		}
+
 		// 全部明细收齐则置为已完成(3)，否则置为部分收货(5)。锁定行本次后的收货数
 		// = locked.ReceivedQty+req.Qty，其余明细沿用 items 快照。
 		allDone := true

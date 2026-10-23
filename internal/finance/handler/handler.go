@@ -8,6 +8,7 @@ import (
 
 	"erp-system/internal/finance/dto"
 	"erp-system/internal/finance/service"
+	"erp-system/internal/pkg/middleware"
 	"erp-system/internal/pkg/response"
 	"github.com/gin-gonic/gin"
 )
@@ -223,7 +224,7 @@ func (h *FinanceHandler) CreateReceipt(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, response.Err(10005, "参数错误: "+err.Error()))
 		return
 	}
-	userID := c.GetInt64("user_id")
+	userID := c.GetInt64(middleware.CtxUserID)
 	tenantID := int64(0)
 	res, err := h.financeService.CreateReceipt(c.Request.Context(), req, userID, tenantID)
 	if err != nil {
@@ -269,7 +270,7 @@ func (h *FinanceHandler) CreatePayment(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, response.Err(10005, "参数错误: "+err.Error()))
 		return
 	}
-	userID := c.GetInt64("user_id")
+	userID := c.GetInt64(middleware.CtxUserID)
 	tenantID := int64(0)
 	res, err := h.financeService.CreatePayment(c.Request.Context(), req, userID, tenantID)
 	if err != nil {
@@ -315,7 +316,7 @@ func (h *FinanceHandler) CreateSettlement(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, response.Err(10005, "参数错误: "+err.Error()))
 		return
 	}
-	userID := c.GetInt64("user_id")
+	userID := c.GetInt64(middleware.CtxUserID)
 	res, err := h.financeService.CreateSettlement(c.Request.Context(), req, userID)
 	if err != nil {
 		c.JSON(http.StatusOK, response.FromError(err))

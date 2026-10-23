@@ -3,12 +3,15 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 
 	"erp-system/internal/mdm/dto"
 	"erp-system/internal/mdm/model"
 	"erp-system/internal/mdm/repository"
+	"erp-system/internal/pkg/excel"
 	"erp-system/internal/pkg/errors"
 	"gorm.io/gorm"
 )
@@ -486,4 +489,62 @@ func (s *MDMService) buildLocationVO(l *model.MdmLocation) (*dto.LocationVO, err
 		Zone:          l.Zone,
 		CreatedAt:     l.CreatedAt.Format("2006-01-02 15:04:05"),
 	}, nil
+}
+
+func (s *MDMService) ExportMaterialsCSV(ctx context.Context, req dto.MaterialListReq) ([]byte, error) {
+	req.Page = 1
+	req.PageSize = 10000
+	list, _, err := s.ListMaterials(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	headers := []string{"物料编码", "物料名称", "规格型号", "基本单位", "采购单位", "库存单位"}
+	rows := make([][]string, 0, len(list))
+	for _, m := range list {
+		rows = append(rows, []string{
+			m.MaterialCode,
+			m.Name,
+			m.Spec,
+			m.Unit,
+			m.PurchaseUnit,
+			m.StockUnit,
+		})
+	}
+	return excel.ExportCSV(headers, rows)
+}
+
+func (s *MDMService) ImportMaterialsCSV(ctx context.Context, data []byte) (int, error) {
+	_, rows, err := excel.ImportCSV(bytes.NewReader(data))
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, row := range rows {
+		if len(row) < 2 || strings.TrimSpace(row[0]) == "" || strings.TrimSpace(row[1]) == "" {
+			continue
+		}
+		m := &model.MdmMaterial{
+			MaterialCode: strings.TrimSpace(row[0]),
+			Name:         strings.TrimSpace(row[1]),
+		}
+		if len(row) > 2 {
+			m.Spec = strings.TrimSpace(row[2])
+		}
+		if len(row) > 3 {
+			m.Unit = strings.TrimSpace(row[3])
+		}
+		if len(row) > 4 {
+			m.PurchaseUnit = strings.TrimSpace(row[4])
+		}
+		if len(row) > 5 {
+			m.StockUnit = strings.TrimSpace(row[5])
+		}
+		if m.Unit == "" {
+			m.Unit = "个"
+		}
+		if err := s.CreateMaterial(ctx, m); err == nil {
+			count++
+		}
+	}
+	return count, nil
 }

@@ -338,6 +338,33 @@ func (s *WarehouseService) ApplyOutboundTx(ctx context.Context, tx *gorm.DB, in 
 		return dto.MoveResult{}, err
 	}
 
+	// 自动按 FEFO 扣减批次余量（同一事务内执行）
+	if s.batchRepo != nil {
+		batches, err := s.batchRepo.ListAvailableFEFO(in.MaterialID)
+		if err != nil {
+			return dto.MoveResult{}, err
+		}
+		if len(batches) > 0 {
+			remain := outQty
+			for _, b := range batches {
+				if remain.IsZero() {
+					break
+				}
+				avail := b.QtyRemaining
+				if avail.IsPositive() {
+					take := avail
+					if remain.Cmp(avail) < 0 {
+						take = remain
+					}
+					if err := s.batchRepo.DeductQty(tx, b.ID, take); err != nil {
+						return dto.MoveResult{}, err
+					}
+					remain = remain.Sub(take)
+				}
+			}
+		}
+	}
+
 	return dto.MoveResult{AfterQty: inv.Qty, AvgCost: inv.AvgCost, CostAmount: costAmount}, nil
 }
 
@@ -358,6 +385,11 @@ func (s *WarehouseService) LocationInUse(ctx context.Context, locationID int64) 
 // AvailableQtyByMaterial 返回某物料跨仓合计的可用库存（生产工单下达前齐套检查用）。
 func (s *WarehouseService) AvailableQtyByMaterial(ctx context.Context, materialID int64) (decimal.Decimal, error) {
 	return s.invRepo.SumAvailableQty(materialID)
+}
+
+// GetMaterialAvgCost 返回物料在库存中的加权平均成本真实值。
+func (s *WarehouseService) GetMaterialAvgCost(ctx context.Context, materialID int64) (decimal.Decimal, bool, error) {
+	return s.invRepo.GetMaterialAvgCost(materialID)
 }
 
 func (s *WarehouseService) ListInventory(ctx context.Context, req dto.InventoryQuery) ([]dto.InventoryVO, int64, error) {
@@ -577,7 +609,11 @@ func (s *WarehouseService) EntryStockCheck(ctx context.Context, checkID int64, r
 				locIDPtr = &loc
 			}
 			diffQty := actual
-			diffAmount := decimal.Zero
+			unitCost := decimal.Zero
+			if cost, ok, _ := s.invRepo.GetMaterialAvgCost(key.materialID); ok && cost.IsPositive() {
+				unitCost = cost
+			}
+			diffAmount := decimalx.Money(unitCost.Mul(diffQty))
 			check.Items = append(check.Items, &warehouseModel.InvStockCheckItem{
 				CheckID:    check.ID,
 				MaterialID: key.materialID,
@@ -585,7 +621,7 @@ func (s *WarehouseService) EntryStockCheck(ctx context.Context, checkID int64, r
 				BookQty:    decimal.Zero,
 				ActualQty:  actual,
 				DiffQty:    diffQty,
-				UnitCost:   decimal.Zero,
+				UnitCost:   unitCost,
 				DiffAmount: diffAmount,
 			})
 			totalDiff = totalDiff.Add(diffAmount)
@@ -634,28 +670,39 @@ func (s *WarehouseService) ApproveStockCheck(ctx context.Context, checkID int64,
 			}
 
 			if diffQty.GreaterThan(decimal.Zero) {
+				unitCost := item.UnitCost
+				if unitCost.IsZero() || unitCost.IsNegative() {
+					if cost, ok, _ := s.invRepo.GetMaterialAvgCost(item.MaterialID); ok && cost.IsPositive() {
+						unitCost = cost
+						item.UnitCost = cost
+					} else {
+						return errors.New(40003, 400, fmt.Sprintf("物料 ID %d 盘盈但单位成本为 0，无法生成财务凭证，请先维护成本", item.MaterialID))
+					}
+				}
 				// 盘盈入库
 				inRes, err := s.ApplyInboundTx(ctx, tx, dto.MoveInput{
 					MaterialID:  item.MaterialID,
 					WarehouseID: check.WarehouseID,
 					LocationID:  locID,
 					Qty:         diffQty,
-					UnitCost:    item.UnitCost,
+					UnitCost:    unitCost,
 					BizType:     BizTypeInventoryCheck,
 					BizNo:       check.CheckNo,
 				})
 				if err != nil {
 					return err
 				}
-				diffAmount := decimalx.Money(item.UnitCost.Mul(diffQty))
+				diffAmount := decimalx.Money(unitCost.Mul(diffQty))
 				item.DiffAmount = diffAmount
 				totalDiffAmount = totalDiffAmount.Add(diffAmount)
 				_ = inRes
 
-				gainLines = append(gainLines,
-					financeService.PostingLine{AccountCode: financeService.AccountFinishedGoods, Debit: diffAmount},
-					financeService.PostingLine{AccountCode: financeService.AccountPendingLoss, Credit: diffAmount},
-				)
+				if diffAmount.IsPositive() {
+					gainLines = append(gainLines,
+						financeService.PostingLine{AccountCode: financeService.AccountFinishedGoods, Debit: diffAmount},
+						financeService.PostingLine{AccountCode: financeService.AccountPendingLoss, Credit: diffAmount},
+					)
+				}
 			} else {
 				// 盘亏出库
 				absDiff := diffQty.Abs()
@@ -674,14 +721,16 @@ func (s *WarehouseService) ApproveStockCheck(ctx context.Context, checkID int64,
 				item.DiffAmount = diffAmount
 				totalDiffAmount = totalDiffAmount.Add(diffAmount)
 
-				lossLines = append(lossLines,
-					financeService.PostingLine{AccountCode: financeService.AccountPendingLoss, Debit: outRes.CostAmount},
-					financeService.PostingLine{AccountCode: financeService.AccountFinishedGoods, Credit: outRes.CostAmount},
-				)
+				if outRes.CostAmount.IsPositive() {
+					lossLines = append(lossLines,
+						financeService.PostingLine{AccountCode: financeService.AccountPendingLoss, Debit: outRes.CostAmount},
+						financeService.PostingLine{AccountCode: financeService.AccountFinishedGoods, Credit: outRes.CostAmount},
+					)
+				}
 			}
 		}
 
-		// 财务过账
+		// 财务过账（仅当有金额大于 0 时才过账，避免 0 金额凭证）
 		if s.finance != nil {
 			if len(gainLines) >= 2 {
 				if err := s.finance.PostTx(ctx, tx, financeService.PostingInput{
