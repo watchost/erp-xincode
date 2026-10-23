@@ -173,17 +173,55 @@ func (s *MDMService) CreateCustomer(ctx context.Context, c *model.MdmCustomer) e
 	return s.customerRepo.Create(c)
 }
 
-func (s *MDMService) UpdateCustomer(ctx context.Context, c *model.MdmCustomer) error {
-	if c.ID == 0 {
+// UpdateCustomer 部分更新客户（P1.5 S5）：先查出现行实体，仅覆盖请求中出现的
+// 字段（req 指针非 nil 才覆盖），未传的 credit_limit/level/status 等风控字段
+// 保持原值，created_at 也不再被零值覆盖。
+func (s *MDMService) UpdateCustomer(ctx context.Context, id int64, req dto.CustomerUpdateReq) error {
+	if id == 0 {
 		return errors.New(10005, 400, "客户 ID 不能为空")
 	}
-	if _, err := s.customerRepo.FindByID(c.ID); err != nil {
+	existing, err := s.customerRepo.FindByID(id)
+	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return errors.New(10100, 404, "客户不存在")
 		}
 		return err
 	}
-	return s.customerRepo.Update(c)
+	if req.CustomerCode != nil && *req.CustomerCode != existing.CustomerCode {
+		if dup, _ := s.customerRepo.FindByCode(*req.CustomerCode); dup != nil {
+			return errors.New(10005, 400, "客户编码已存在")
+		}
+		existing.CustomerCode = *req.CustomerCode
+	}
+	if req.Name != nil {
+		existing.Name = *req.Name
+	}
+	if req.Contact != nil {
+		existing.Contact = *req.Contact
+	}
+	if req.Phone != nil {
+		existing.Phone = *req.Phone
+	}
+	if req.Address != nil {
+		existing.Address = *req.Address
+	}
+	if req.CreditLimit != nil {
+		existing.CreditLimit = *req.CreditLimit
+	}
+	if req.Level != nil {
+		existing.Level = *req.Level
+	}
+	if req.Status != nil {
+		existing.Status = *req.Status
+	}
+	if req.Attributes != nil {
+		attrs, err := json.Marshal(req.Attributes)
+		if err != nil {
+			return errors.New(10005, 400, "扩展属性序列化失败")
+		}
+		existing.Attributes = attrs
+	}
+	return s.customerRepo.Update(existing)
 }
 
 func (s *MDMService) DeleteCustomer(ctx context.Context, id int64) error {

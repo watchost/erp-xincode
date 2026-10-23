@@ -33,6 +33,8 @@ import (
 	financeService "erp-system/internal/finance/service"
 	purchaseRepo "erp-system/internal/purchase/repository"
 	purchaseService "erp-system/internal/purchase/service"
+	salesRepo "erp-system/internal/sales/repository"
+	salesService "erp-system/internal/sales/service"
 	warehouseRepo "erp-system/internal/warehouse/repository"
 	warehouseService "erp-system/internal/warehouse/service"
 )
@@ -44,6 +46,12 @@ var businessTables = []string{
 	"pur_purchase_inbound",
 	"pur_purchase_order_item",
 	"pur_purchase_order",
+	"sal_sales_return_item",
+	"sal_sales_return",
+	"sal_sales_outbound_item",
+	"sal_sales_outbound",
+	"sal_sales_order_item",
+	"sal_sales_order",
 	"fin_cost",
 	"fin_voucher_entry",
 	"fin_voucher",
@@ -241,6 +249,22 @@ func CreateFixture(t *testing.T, gdb *gorm.DB, codeSuffix string) Fixture {
 	return Fixture{Material: mat, Supplier: sup, Warehouse: wh, Location: loc}
 }
 
+// CreateCustomer 写入客户主数据夹具（creditLimit=0 表示不限额）。
+func CreateCustomer(t *testing.T, gdb *gorm.DB, codeSuffix string, creditLimit decimal.Decimal) *mdmModel.MdmCustomer {
+	t.Helper()
+	c := &mdmModel.MdmCustomer{
+		CustomerCode: "CUS-IT-" + codeSuffix,
+		Name:         "集成测试客户-" + codeSuffix,
+		CreditLimit:  creditLimit,
+		Level:        1,
+		Status:       1,
+	}
+	if err := gdb.Create(c).Error; err != nil {
+		t.Fatalf("创建客户夹具失败: %v", err)
+	}
+	return c
+}
+
 // Ctx 返回带用户 ID 的上下文（单据 CreatedBy 取登录用户）。
 func Ctx() context.Context {
 	return context.Background()
@@ -302,6 +326,50 @@ type PurchaseDeps struct {
 // IdempotencyGuard 是采购/仓库 service 幂等守卫参数的公开镜像。
 type IdempotencyGuard interface {
 	Acquire(ctx context.Context, scope, key string) error
+}
+
+// SalesDeps 聚合销售 service 与其依赖，便于用例直接查库断言。
+type SalesDeps struct {
+	Service      *salesService.SalesService
+	OrderRepo    salesRepo.SalesOrderRepository
+	OutboundRepo salesRepo.SalesOutboundRepository
+	ReturnRepo   salesRepo.SalesReturnRepository
+}
+
+// NewSalesService 装配销售 service，过账用真实 FinanceService。
+func NewSalesService(gdb *gorm.DB, wh *warehouseService.WarehouseService, fin *financeService.FinanceService) SalesDeps {
+	return NewSalesServiceWith(gdb, wh, fin, nil)
+}
+
+// NewSalesServiceWith 允许注入自定义过账器（故障桩）与幂等守卫。
+func NewSalesServiceWith(
+	gdb *gorm.DB,
+	wh *warehouseService.WarehouseService,
+	fin financeService.Poster,
+	guard IdempotencyGuard,
+) SalesDeps {
+	orderRepo := salesRepo.NewSalesOrderRepository(gdb)
+	outboundRepo := salesRepo.NewSalesOutboundRepository(gdb)
+	returnRepo := salesRepo.NewSalesReturnRepository(gdb)
+	return SalesDeps{
+		Service: salesService.NewSalesService(
+			db.NewTxManager(gdb),
+			orderRepo,
+			outboundRepo,
+			returnRepo,
+			mdmRepo.NewCustomerRepository(gdb),
+			mdmRepo.NewMaterialRepository(gdb),
+			mdmRepo.NewWarehouseRepository(gdb),
+			mdmRepo.NewLocationRepository(gdb),
+			wh,
+			fin,
+			bizno.NewGenerator(nil),
+			guard,
+		),
+		OrderRepo:    orderRepo,
+		OutboundRepo: outboundRepo,
+		ReturnRepo:   returnRepo,
+	}
 }
 
 // NewPurchaseService 装配采购 service，财务网关用真实 FinanceService。

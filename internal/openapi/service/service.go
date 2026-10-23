@@ -5,13 +5,16 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	stderrors "errors"
 	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 
 	"erp-system/internal/openapi/dto"
 	"erp-system/internal/openapi/model"
@@ -122,12 +125,21 @@ func (s *OpenAPIService) GetToken(ctx context.Context, req dto.TokenReq) (*dto.T
 	return s.issueToken(client.ClientID, scope)
 }
 
+// hashToken P1.5 H5：token 落库前 SHA-256（hex，64 字符，varchar(128) 列宽足够）。
+// 明文 token 只在签发响应中返回，库中仅存哈希；所有按 token 的查询一律按哈希。
+func hashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
 func (s *OpenAPIService) issueToken(clientID, scope string) (*dto.TokenRes, error) {
 	expiresAt := time.Now().Add(time.Duration(tokenTTLSeconds) * time.Second)
+	accessToken := uuid.NewString()
+	refreshToken := uuid.NewString()
 	token := &model.OpenToken{
 		ClientID:     clientID,
-		AccessToken:  uuid.NewString(),
-		RefreshToken: uuid.NewString(),
+		AccessToken:  hashToken(accessToken),  // P1.5 H5：哈希落库
+		RefreshToken: hashToken(refreshToken), // P1.5 H5：哈希落库
 		Scope:        scope,
 		ExpiresAt:    expiresAt,
 	}
@@ -135,44 +147,59 @@ func (s *OpenAPIService) issueToken(clientID, scope string) (*dto.TokenRes, erro
 		return nil, err
 	}
 	return &dto.TokenRes{
-		AccessToken:  token.AccessToken,
+		AccessToken:  accessToken,
 		TokenType:    "Bearer",
 		ExpiresIn:    tokenTTLSeconds,
-		RefreshToken: token.RefreshToken,
+		RefreshToken: refreshToken,
 		Scope:        scope,
 	}, nil
 }
 
-// RefreshToken 旋转：旧 refresh 一次性作废（删除旧 token 行），签发新对。
-// 旧 refresh 复用会因行已删除而失败，天然防重放。
+// RefreshToken 旋转（P1.5 H11）：单事务内先 DELETE 旧 refresh（哈希匹配且未过期，
+// RETURNING）再插入新 token 行。行数为 0 即拒绝——并发换发只有一个能消费成功，
+// 旧 refresh 重放因行已删除而失败，天然防重放；删除或插入失败整体回滚。
+// 存量明文 token（H5 修复前签发）随 2h TTL 自然过期，查询只认哈希。
 func (s *OpenAPIService) RefreshToken(ctx context.Context, refreshToken string) (*dto.TokenRes, error) {
-	token, err := s.tokenRepo.FindByRefreshToken(refreshToken)
-	if err != nil || token.Revoked != 0 {
-		return nil, errors.New(errCodeBadRefreshToken, 401, "无效的刷新令牌")
+	accessToken := uuid.NewString()
+	newRefreshToken := uuid.NewString()
+	newToken := &model.OpenToken{
+		AccessToken:  hashToken(accessToken),
+		RefreshToken: hashToken(newRefreshToken),
+		ExpiresAt:    time.Now().Add(time.Duration(tokenTTLSeconds) * time.Second),
 	}
 
-	client, err := s.clientRepo.FindByClientID(token.ClientID)
-	if err != nil || client.Status != 1 {
-		return nil, errors.New(errCodeClientDisabled, 403, "客户端已禁用")
-	}
-
-	res, err := s.issueToken(token.ClientID, token.Scope)
+	err := s.tokenRepo.RotateRefreshToken(hashToken(refreshToken), newToken, func(consumed *model.OpenToken) error {
+		if consumed.Revoked != 0 {
+			return errors.New(errCodeBadRefreshToken, 401, "无效的刷新令牌")
+		}
+		client, err := s.clientRepo.FindByClientID(consumed.ClientID)
+		if err != nil || client.Status != 1 {
+			return errors.New(errCodeClientDisabled, 403, "客户端已禁用")
+		}
+		newToken.ClientID = consumed.ClientID
+		newToken.Scope = consumed.Scope
+		return nil
+	})
 	if err != nil {
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.New(errCodeBadRefreshToken, 401, "无效的刷新令牌")
+		}
 		return nil, err
 	}
 
-	// 旋转：旧 access+refresh 一并失效。
-	_ = s.tokenRepo.DeleteByAccessToken(token.AccessToken)
-	return res, nil
+	return &dto.TokenRes{
+		AccessToken:  accessToken,
+		TokenType:    "Bearer",
+		ExpiresIn:    tokenTTLSeconds,
+		RefreshToken: newRefreshToken,
+		Scope:        newToken.Scope,
+	}, nil
 }
 
 func (s *OpenAPIService) ValidateAccessToken(accessToken string) (*model.OpenToken, error) {
-	token, err := s.tokenRepo.FindByAccessToken(accessToken)
+	// P1.5 H5：按哈希等值查询——哈希比较无时序侧信道价值，命中即视为令牌匹配。
+	token, err := s.tokenRepo.FindByAccessTokenHash(hashToken(accessToken))
 	if err != nil || token.Revoked != 0 {
-		return nil, errors.New(errCodeBadAccessToken, 401, "无效的访问令牌")
-	}
-	// 常数时间复核令牌串，防时序探测（DB 命中后仍逐字节比对）。
-	if subtle.ConstantTimeCompare([]byte(token.AccessToken), []byte(accessToken)) != 1 {
 		return nil, errors.New(errCodeBadAccessToken, 401, "无效的访问令牌")
 	}
 

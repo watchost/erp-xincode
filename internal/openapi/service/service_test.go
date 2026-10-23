@@ -4,8 +4,11 @@ package service_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +20,12 @@ import (
 	"erp-system/internal/openapi/service"
 	apperrors "erp-system/internal/pkg/errors"
 )
+
+// hashTokenForTest 与 service.hashToken 相同的 SHA-256（hex），供夹具按哈希存取。
+func hashTokenForTest(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
 
 // ---------- 内存假仓储 ----------
 
@@ -42,6 +51,7 @@ func (f *fakeClientRepo) List(page, pageSize int) ([]model.OpenClient, int64, er
 }
 
 type fakeTokenRepo struct {
+	mu        sync.Mutex
 	byAccess  map[string]*model.OpenToken
 	byRefresh map[string]*model.OpenToken
 }
@@ -50,29 +60,37 @@ func newFakeTokenRepo() *fakeTokenRepo {
 	return &fakeTokenRepo{byAccess: map[string]*model.OpenToken{}, byRefresh: map[string]*model.OpenToken{}}
 }
 func (f *fakeTokenRepo) Create(t *model.OpenToken) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.byAccess[t.AccessToken] = t
 	f.byRefresh[t.RefreshToken] = t
 	return nil
 }
-func (f *fakeTokenRepo) FindByAccessToken(at string) (*model.OpenToken, error) {
-	t, ok := f.byAccess[at]
+func (f *fakeTokenRepo) FindByAccessTokenHash(hash string) (*model.OpenToken, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.byAccess[hash]
 	if !ok {
 		return nil, gorm.ErrRecordNotFound
 	}
 	return t, nil
 }
-func (f *fakeTokenRepo) FindByRefreshToken(rt string) (*model.OpenToken, error) {
-	t, ok := f.byRefresh[rt]
-	if !ok {
-		return nil, gorm.ErrRecordNotFound
+
+// RotateRefreshToken 对齐真实仓储的原子消费语义（单条 delete+insert 临界区）。
+func (f *fakeTokenRepo) RotateRefreshToken(refreshHash string, newToken *model.OpenToken, validate func(consumed *model.OpenToken) error) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.byRefresh[refreshHash]
+	if !ok || t.ExpiresAt.Before(time.Now()) {
+		return gorm.ErrRecordNotFound
 	}
-	return t, nil
-}
-func (f *fakeTokenRepo) DeleteByAccessToken(at string) error {
-	if t, ok := f.byAccess[at]; ok {
-		delete(f.byRefresh, t.RefreshToken)
-		delete(f.byAccess, at)
+	if err := validate(t); err != nil {
+		return err
 	}
+	delete(f.byRefresh, refreshHash)
+	delete(f.byAccess, t.AccessToken)
+	f.byAccess[newToken.AccessToken] = newToken
+	f.byRefresh[newToken.RefreshToken] = newToken
 	return nil
 }
 
@@ -205,6 +223,29 @@ func TestGetTokenSuccess(t *testing.T) {
 	}
 }
 
+// P1.5 H5：签发后仓储中只存 SHA-256 哈希，按明文查询查不到。
+func TestGetTokenStoresHash(t *testing.T) {
+	svc, tokens, _ := newSvc("s3cret", 1, []string{"read"})
+	res, err := svc.GetToken(context.Background(), dto.TokenReq{
+		GrantType: "client_credentials", ClientID: "oc_test", ClientSecret: "s3cret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tokens.byAccess[res.AccessToken]; ok {
+		t.Fatal("仓储中不应按明文 access token 存取")
+	}
+	if _, ok := tokens.byRefresh[res.RefreshToken]; ok {
+		t.Fatal("仓储中不应按明文 refresh token 存取")
+	}
+	if _, ok := tokens.byAccess[hashTokenForTest(res.AccessToken)]; !ok {
+		t.Fatal("仓储中应按 access token 哈希存取")
+	}
+	if _, ok := tokens.byRefresh[hashTokenForTest(res.RefreshToken)]; !ok {
+		t.Fatal("仓储中应按 refresh token 哈希存取")
+	}
+}
+
 // 空 scope 申请 → 授予客户端全集。
 func TestGetTokenDefaultScope(t *testing.T) {
 	svc, _, _ := newSvc("s3cret", 1, []string{"read", "write"})
@@ -228,7 +269,7 @@ func TestValidateAccessToken(t *testing.T) {
 	}
 
 	expired := &model.OpenToken{
-		ClientID: "oc_test", AccessToken: "at-expired", RefreshToken: "rt-expired",
+		ClientID: "oc_test", AccessToken: hashTokenForTest("at-expired"), RefreshToken: hashTokenForTest("rt-expired"),
 		ExpiresAt: time.Now().Add(-time.Hour),
 	}
 	_ = tokens.Create(expired)
@@ -237,7 +278,7 @@ func TestValidateAccessToken(t *testing.T) {
 	}
 
 	valid := &model.OpenToken{
-		ClientID: "oc_test", AccessToken: "at-ok", RefreshToken: "rt-ok",
+		ClientID: "oc_test", AccessToken: hashTokenForTest("at-ok"), RefreshToken: hashTokenForTest("rt-ok"),
 		ExpiresAt: time.Now().Add(time.Hour),
 	}
 	_ = tokens.Create(valid)

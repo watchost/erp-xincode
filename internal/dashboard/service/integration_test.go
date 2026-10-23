@@ -7,6 +7,10 @@ import (
 
 	dashboardService "erp-system/internal/dashboard/service"
 	"erp-system/internal/pkg/db"
+	productionModel "erp-system/internal/production/model"
+	productionService "erp-system/internal/production/service"
+	purchaseModel "erp-system/internal/purchase/model"
+	purchaseService "erp-system/internal/purchase/service"
 	"erp-system/internal/testsupport"
 )
 
@@ -74,5 +78,91 @@ func TestDashboard_OverviewAndAlertsDecimal(t *testing.T) {
 	}
 	if minByCode[matB.MaterialCode] != "3.5" {
 		t.Fatalf("安全库存应精确回读 3.5，实际 %s", minByCode[matB.MaterialCode])
+	}
+}
+
+// P1.5 H7：迁移 0010 状态码改版（旧 1/2/5/3/4 → 新 10/20/30/40/50）后，
+// 仪表盘统计必须按新码口径计数、状态描述不得回退为「未知」。
+// 夹具直接落库新状态码的采购单/工单，断言：
+//   - 待审批采购订单只统计草稿（10）；
+//   - 进行中工单只统计已下达（20）+ 生产中（30）；
+//   - 最近采购订单五种状态的描述全部命中新码文案。
+func TestDashboard_StatusCodesAfterMigration0010(t *testing.T) {
+	gdb := testsupport.NewDB(t)
+	fx := testsupport.CreateFixture(t, gdb, "dashst")
+	ctx := testsupport.Ctx()
+
+	// 采购订单：五种新状态码各一张
+	purStatuses := []int{
+		purchaseService.OrderStatusDraft,             // 10 草稿 → 待审批
+		purchaseService.OrderStatusApproved,          // 20 已审批
+		purchaseService.OrderStatusPartiallyReceived, // 30 部分收货
+		purchaseService.OrderStatusCompleted,         // 40 已完成
+		purchaseService.OrderStatusCanceled,          // 50 已取消
+	}
+	for i, st := range purStatuses {
+		order := &purchaseModel.PurPurchaseOrder{
+			OrderNo:     "PO-IT-ST-" + string(rune('A'+i)),
+			SupplierID:  fx.Supplier.ID,
+			Status:      st,
+			TotalAmount: testsupport.D("100"),
+			CreatedBy:   1,
+		}
+		if err := gdb.Create(order).Error; err != nil {
+			t.Fatalf("创建采购订单失败(status=%d): %v", st, err)
+		}
+	}
+
+	// 生产工单：已下达/生产中/已完成/草稿 各一张
+	woStatuses := []int{
+		productionService.WorkOrderStatusReleased,   // 20 已下达 → 进行中
+		productionService.WorkOrderStatusInProgress, // 30 生产中 → 进行中
+		productionService.WorkOrderStatusCompleted,  // 40 已完成 → 不计
+		productionService.WorkOrderStatusDraft,      // 10 草稿 → 不计
+	}
+	for i, st := range woStatuses {
+		wo := &productionModel.ProWorkOrder{
+			WorkOrderNo: "WO-IT-ST-" + string(rune('A'+i)),
+			ProductID:   fx.Material.ID,
+			PlanQty:     testsupport.D("10"),
+			Status:      st,
+			CreatedBy:   1,
+		}
+		if err := gdb.Create(wo).Error; err != nil {
+			t.Fatalf("创建工单失败(status=%d): %v", st, err)
+		}
+	}
+
+	svc := dashboardService.NewDashboardService(db.NewTxManager(gdb), gdb, nil, false)
+
+	ov, err := svc.GetOverview(ctx)
+	if err != nil {
+		t.Fatalf("获取仪表盘总览失败: %v", err)
+	}
+	if ov.PendingPurchaseOrders != 1 {
+		t.Fatalf("待审批采购订单应为 1（仅草稿 10），实际 %d", ov.PendingPurchaseOrders)
+	}
+	if ov.InProgressWorkOrders != 2 {
+		t.Fatalf("进行中工单应为 2（已下达 20 + 生产中 30），实际 %d", ov.InProgressWorkOrders)
+	}
+
+	orders, err := svc.GetRecentOrders(ctx)
+	if err != nil {
+		t.Fatalf("获取最近采购订单失败: %v", err)
+	}
+	if len(orders) != len(purStatuses) {
+		t.Fatalf("最近采购订单应为 %d 条，实际 %d", len(purStatuses), len(orders))
+	}
+	descSeen := map[string]bool{}
+	for _, o := range orders {
+		if o.StatusDesc == "未知" {
+			t.Fatalf("订单 %s 状态描述不应为「未知」（新状态码未命中）", o.OrderNo)
+		}
+		descSeen[o.StatusDesc] = true
+	}
+	for _, want := range []string{"草稿", "已审批", "部分收货", "已完成", "已取消"} {
+		if !descSeen[want] {
+			t.Fatalf("状态描述 %q 未出现，实际集合 %v", want, descSeen)
+		}
 	}
 }

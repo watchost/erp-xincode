@@ -35,6 +35,16 @@ func isPrivateIP(ip net.IP) bool {
 	return false
 }
 
+// IsPublicIP P1.5 H4：判断 IP 是否为公网地址（先归一化 IPv4-mapped IPv6，
+// 再按 ValidatePublicURL 同一套内网段判定）。供 webhook 投递拨号期校验复用，
+// 消除 DNS 重绑定 TOCTOU（审计 M28 合并治理）。
+func IsPublicIP(ip net.IP) bool {
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+	return !isPrivateIP(ip)
+}
+
 // ValidatePublicURL 校验 webhook 回调地址：仅 http/https、禁止内网地址。
 // 创建与投递时都调用（投递时再解析一次防 DNS 重绑定）。
 func ValidatePublicURL(rawURL string) error {

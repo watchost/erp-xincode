@@ -3,6 +3,7 @@
 package worker
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,7 +11,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -83,6 +86,8 @@ func newTestWorker(hook *model.OpenWebhook) (*Worker, *fakeDeliveryRepo) {
 	deliveries := &fakeDeliveryRepo{}
 	w := NewWorker(deliveries, &fakeWebhookRepo{hook: hook})
 	w.validateURL = func(string) error { return nil } // 测试投递到 httptest（127.0.0.1）
+	// 测试投递到 127.0.0.1，绕过拨号期公网校验（P1.5 H4 的校验由专项用例覆盖）。
+	w.httpClient = &http.Client{Timeout: 10 * time.Second}
 	return w, deliveries
 }
 
@@ -222,6 +227,51 @@ func TestRetryBackoff(t *testing.T) {
 	for i, w := range want {
 		if got := retryBackoff(i + 1); got != w {
 			t.Errorf("retryBackoff(%d)=%v，期望 %v", i+1, got, w)
+		}
+	}
+}
+
+// P1.5 H4：CheckRedirect 拒绝一切重定向——307 链不跟随，目标服务器零命中。
+func TestSecureClientRejectsRedirect(t *testing.T) {
+	var hitB int32
+	srvB := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hitB, 1)
+		rw.WriteHeader(http.StatusOK)
+	}))
+	defer srvB.Close()
+	srvA := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Location", srvB.URL)
+		rw.WriteHeader(http.StatusTemporaryRedirect) // 307：带 body 与 Header 重发
+	}))
+	defer srvA.Close()
+
+	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: rejectRedirect}
+	_, err := client.Post(srvA.URL, "application/json", strings.NewReader(`{"x":1}`))
+	if err == nil || !errors.Is(err, errRedirectRejected) {
+		t.Fatalf("重定向应被拒绝（errRedirectRejected），实际 %v", err)
+	}
+	if atomic.LoadInt32(&hitB) != 0 {
+		t.Fatal("不应跟随重定向到目标服务器")
+	}
+}
+
+// P1.5 H4：拨号期 IP 校验——私网/环回/链路本地/IPv4-mapped IPv6 一律拒拨。
+func TestSecureDialContextRejectsPrivate(t *testing.T) {
+	bad := []string{
+		"127.0.0.1:8080",
+		"10.1.2.3:443",
+		"172.16.0.1:80",
+		"192.168.1.1:80",
+		"169.254.169.254:80",
+		"[::1]:8080",
+		"[::ffff:127.0.0.1]:80", // IPv4-mapped IPv6 环回
+		"localhost:8080",
+	}
+	for _, addr := range bad {
+		conn, err := secureDialContext(context.Background(), "tcp", addr)
+		if err == nil {
+			_ = conn.Close()
+			t.Errorf("应拒绝拨号内网地址 %s", addr)
 		}
 	}
 }

@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"erp-system/internal/llm/dto"
@@ -302,9 +303,15 @@ func promptTemplateVO(t *model.LlmPromptTemplate) *dto.PromptTemplateVO {
 	}
 }
 
+// truncateTitle 生成会话标题，按 rune 保留前 maxLen 个字符。
+// P1.5 H12：原实现 s[:maxLen] 按字节截断，会切断多字节 UTF-8 字符（中文 3 字节），
+// 非法字节序列写入 PG 报 invalid byte sequence，长中文提问建会话直接 500。
+// 先用 strings.ToValidUTF8 剔除输入中已有的非法字节兜底，再按 rune 截断。
 func truncateTitle(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	s = strings.ToValidUTF8(s, "")
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	return string(runes[:maxLen]) + "..."
 }

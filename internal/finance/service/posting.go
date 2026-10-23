@@ -21,8 +21,11 @@ import (
 const (
 	AccountRawMaterials   = "1403" // 原材料（资产类，借增贷减）
 	AccountFinishedGoods  = "1405" // 库存商品（资产类，借增贷减）
+	AccountReceivable     = "1122" // 应收账款（资产类，借增贷减）
 	AccountsPayable       = "2202" // 应付账款（负债类，贷增借减）
 	AccountProductionCost = "5001" // 生产成本（成本类，借增贷减；余额为在产品）
+	AccountMainRevenue    = "6001" // 主营业务收入（损益类，贷增借减）
+	AccountMainCost       = "6401" // 主营业务成本（损益类，借增贷减）
 )
 
 // 业务事件类型，写入 fin_voucher.biz_type，便于按事件溯源与对账。
@@ -30,6 +33,8 @@ const (
 	BizTypePurchaseInbound   = "purchase_inbound"   // 采购入库
 	BizTypeProductionIssue   = "production_issue"   // 生产领料
 	BizTypeProductionReceipt = "production_receipt" // 生产入库/完工报工
+	BizTypeSalesOutbound     = "sales_outbound"     // 销售出库（P2 §3.1）
+	BizTypeSalesReturn       = "sales_return"       // 销售退货入库（P2 §3.1）
 )
 
 // 成本卡来源类型，写入 fin_cost.source_type。

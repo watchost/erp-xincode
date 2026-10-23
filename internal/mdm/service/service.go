@@ -132,8 +132,80 @@ func (s *MDMService) CreateMaterial(ctx context.Context, m *model.MdmMaterial) e
 	return s.materialRepo.Create(m)
 }
 
-func (s *MDMService) UpdateMaterial(ctx context.Context, m *model.MdmMaterial) error {
-	return s.materialRepo.Update(m)
+// UpdateMaterial 部分更新物料（P1.6 H6）：先查出现行实体，仅合并请求中出现的
+// 字段；nil 字段保留原值——conversion_rate 是 NOT NULL 列，客户端不传时写 NULL
+// 会触发 23502，且 Save 全列会毁掉 created_at。
+func (s *MDMService) UpdateMaterial(ctx context.Context, id int64, req dto.MaterialUpdateReq) error {
+	if id == 0 {
+		return errors.New(10005, 400, "物料 ID 不能为空")
+	}
+	existing, err := s.materialRepo.FindByID(id)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return errors.New(10100, 404, "物料不存在")
+		}
+		return err
+	}
+	if req.MaterialCode != nil && *req.MaterialCode != existing.MaterialCode {
+		if dup, _ := s.materialRepo.FindByCode(*req.MaterialCode); dup != nil {
+			return errors.New(10005, 400, "物料编码已存在")
+		}
+		existing.MaterialCode = *req.MaterialCode
+	}
+	if req.Name != nil {
+		existing.Name = *req.Name
+	}
+	if req.Spec != nil {
+		existing.Spec = *req.Spec
+	}
+	if req.CategoryID != nil {
+		existing.CategoryID = *req.CategoryID
+	}
+	if req.Unit != nil {
+		existing.Unit = *req.Unit
+	}
+	if req.PurchaseUnit != nil {
+		existing.PurchaseUnit = *req.PurchaseUnit
+	}
+	if req.StockUnit != nil {
+		existing.StockUnit = *req.StockUnit
+	}
+	if req.ConversionRate != nil {
+		// 换算率必须为正：1 采购单位 = conversion_rate 库存单位，0/负数无业务意义。
+		if !req.ConversionRate.IsPositive() {
+			return errors.New(10005, 400, "换算率必须大于 0")
+		}
+		existing.ConversionRate = req.ConversionRate
+	}
+	if req.CostMethod != nil {
+		existing.CostMethod = *req.CostMethod
+	}
+	if req.Attributes != nil {
+		attrs, err := json.Marshal(req.Attributes)
+		if err != nil {
+			return errors.New(10005, 400, "扩展属性序列化失败")
+		}
+		existing.Attributes = attrs
+	}
+	if req.Status != nil {
+		existing.Status = *req.Status
+	}
+	if req.MinStock != nil {
+		existing.MinStock = req.MinStock
+	}
+	if req.MaxStock != nil {
+		existing.MaxStock = req.MaxStock
+	}
+	if req.BatchManaged != nil {
+		existing.BatchManaged = *req.BatchManaged
+	}
+	if req.SerialManaged != nil {
+		existing.SerialManaged = *req.SerialManaged
+	}
+	if req.ShelfLifeDays != nil {
+		existing.ShelfLifeDays = *req.ShelfLifeDays
+	}
+	return s.materialRepo.Update(existing)
 }
 
 func (s *MDMService) DeleteMaterial(ctx context.Context, id int64) error {

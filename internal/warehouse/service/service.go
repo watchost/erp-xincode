@@ -27,6 +27,7 @@ const (
 	BizTypeInventoryCheck     = 4
 	BizTypeLocationTransfer   = 5
 	BizTypeSalesOutbound      = 6
+	BizTypeSalesReturn        = 7 // 销售退货入库（P2 §3.1）
 )
 
 // IdempotencyGuard 由 *idemp.Guard 满足；抽成接口便于单测。

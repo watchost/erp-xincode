@@ -101,15 +101,16 @@ func (h *MDMHandler) CreateCustomer(c *gin.Context) {
 	c.JSON(http.StatusOK, response.OK(gin.H{"id": m.ID}))
 }
 
+// UpdateCustomer 绑定指针字段 DTO（P1.5 S5），区分「字段未传」与「显式传零值」，
+// 未传字段由 service 保留原值。
 func (h *MDMHandler) UpdateCustomer(c *gin.Context) {
 	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
-	var m model.MdmCustomer
-	if err := c.ShouldBindJSON(&m); err != nil {
+	var req dto.CustomerUpdateReq
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, response.Err(10005, "参数错误: "+err.Error()))
 		return
 	}
-	m.ID = id
-	if err := h.mdmService.UpdateCustomer(c.Request.Context(), &m); err != nil {
+	if err := h.mdmService.UpdateCustomer(c.Request.Context(), id, req); err != nil {
 		c.JSON(http.StatusOK, response.FromError(err))
 		return
 	}

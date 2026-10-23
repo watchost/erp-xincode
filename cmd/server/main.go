@@ -43,6 +43,9 @@ import (
 	purchaseHandler "erp-system/internal/purchase/handler"
 	purchaseRepository "erp-system/internal/purchase/repository"
 	purchaseService "erp-system/internal/purchase/service"
+	salesHandler "erp-system/internal/sales/handler"
+	salesRepository "erp-system/internal/sales/repository"
+	salesService "erp-system/internal/sales/service"
 
 	productionHandler "erp-system/internal/production/handler"
 	productionRepository "erp-system/internal/production/repository"
@@ -190,6 +193,18 @@ func main() {
 	// 采购单/工单列表套用 IAM 5 档数据权限；单据 dept_id 创建时取自 claims。
 	purchaseSvc.SetDataScopeResolver(iamSvc)
 
+	// 销售模块（P2 §3.1）：订单/出库/退货，与采购对称。
+	salesOrderRepo := salesRepository.NewSalesOrderRepository(dbConn)
+	salesOutboundRepo := salesRepository.NewSalesOutboundRepository(dbConn)
+	salesReturnRepo := salesRepository.NewSalesReturnRepository(dbConn)
+	salesSvc := salesService.NewSalesService(
+		txManager, salesOrderRepo, salesOutboundRepo, salesReturnRepo,
+		mdmCustomerRepo, mdmMaterialRepo, mdmWarehouseRepo, mdmLocationRepo,
+		warehouseSvc, financeSvc, numberGen, idempGuard,
+	)
+	salesH := salesHandler.NewSalesHandler(salesSvc)
+	salesSvc.SetDataScopeResolver(iamSvc)
+
 	// 生产模块
 	productionWorkOrderRepo := productionRepository.NewWorkOrderRepository(dbConn)
 	productionReceiptRepo := productionRepository.NewProductionReceiptRepository(dbConn)
@@ -323,6 +338,7 @@ func main() {
 		MDM:          mdmH,
 		Warehouse:    warehouseH,
 		Purchase:     purchaseH,
+		Sales:        salesH,
 		Production:   productionH,
 		Finance:      financeH,
 		Dashboard:    dashboardH,

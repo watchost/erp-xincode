@@ -17,6 +17,8 @@ type OpenClient struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+// OpenToken P1.5 H5：AccessToken/RefreshToken 列存的是 token 的 SHA-256 哈希（hex），
+// 明文只在签发响应中返回，落库与查询一律用哈希。
 type OpenToken struct {
 	ID           int64     `json:"id"`
 	ClientID     string    `json:"client_id"`

@@ -9,8 +9,10 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
 
@@ -18,6 +20,64 @@ import (
 	"erp-system/internal/openapi/repository"
 	openapiService "erp-system/internal/openapi/service"
 )
+
+// errRedirectRejected P1.5 H4：webhook 投递禁止跟随任何重定向。
+// 307/308 会携带完整 body 与签名 Header 重发，跟随重定向将绕过
+// ValidatePublicURL 的 SSRF 校验（重定向目标未经校验）。
+var errRedirectRejected = errors.New("webhook 投递禁止跟随重定向")
+
+// rejectRedirect P1.5 H4：http.Client.CheckRedirect 钩子，一律拒绝。
+func rejectRedirect(_ *http.Request, _ []*http.Request) error {
+	return errRedirectRejected
+}
+
+// secureDialContext P1.5 H4+M28：自定义拨号——先解析 host，逐个校验解析 IP
+// 必须为公网（拒绝私网/环回/链路本地/169.254.169.254 等），全部公网才拨号。
+// 在拨号时点校验实际连接的 IP，消除「校验时解析」与「拨号时解析」分离造成的
+// DNS 重绑定 TOCTOU。
+func secureDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return nil, fmt.Errorf("webhook 目标域名解析失败: %w", err)
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("webhook 目标域名无解析结果: %s", host)
+	}
+	for _, ip := range ips {
+		if !openapiService.IsPublicIP(ip) {
+			return nil, fmt.Errorf("webhook 目标解析到内网地址 %s，拒绝拨号", ip)
+		}
+	}
+
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	var lastErr error
+	for _, ip := range ips {
+		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+// newSecureHTTPClient P1.5 H4：构造投递专用 http.Client——
+// 拒绝一切重定向 + 拨号期校验实际解析 IP 为公网。
+func newSecureHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout:       10 * time.Second,
+		CheckRedirect: rejectRedirect,
+		Transport: &http.Transport{
+			DialContext:           secureDialContext,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 10 * time.Second,
+		},
+	}
+}
 
 // retryBackoff 第 n 次失败后的重试间隔（30s, 1m, 2m, 4m）。
 func retryBackoff(attempts int) time.Duration {
@@ -41,7 +101,7 @@ func NewWorker(deliveryRepo repository.WebhookDeliveryRepository, webhookRepo re
 	return &Worker{
 		deliveryRepo: deliveryRepo,
 		webhookRepo:  webhookRepo,
-		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		httpClient:   newSecureHTTPClient(), // P1.5 H4：禁重定向 + 拨号期 IP 校验
 		validateURL:  openapiService.ValidatePublicURL,
 		batchSize:    50,
 		interval:     5 * time.Second,

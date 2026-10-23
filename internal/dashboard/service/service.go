@@ -14,7 +14,9 @@ import (
 	"erp-system/internal/llm/gateway"
 	"erp-system/internal/pkg/db"
 	productionModel "erp-system/internal/production/model"
+	productionService "erp-system/internal/production/service"
 	purchaseModel "erp-system/internal/purchase/model"
+	purchaseService "erp-system/internal/purchase/service"
 	warehouseModel "erp-system/internal/warehouse/model"
 	"gorm.io/gorm"
 )
@@ -50,12 +52,14 @@ func (s *DashboardService) GetOverview(ctx context.Context) (*dto.OverviewVO, er
 		Where("biz_type = ? AND DATE(created_at) = ?", 2, today).
 		Select("COALESCE(SUM(ABS(change_qty)), 0)").Scan(&vo.TodayOutboundQty)
 
+	// P1.5 H7：迁移 0010 后状态码统一改版（旧 1/2/5/3/4 → 新 10/20/30/40/50），
+	// 统计口径必须引用采购/生产模块导出的状态常量，禁止再硬编码旧码。
 	_ = s.db.Model(&purchaseModel.PurPurchaseOrder{}).
-		Where("status = ?", 1).
+		Where("status = ?", purchaseService.OrderStatusDraft).
 		Count(&vo.PendingPurchaseOrders)
 
 	_ = s.db.Model(&productionModel.ProWorkOrder{}).
-		Where("status = ? OR status = ?", 2, 3).
+		Where("status IN ?", []int{productionService.WorkOrderStatusReleased, productionService.WorkOrderStatusInProgress}).
 		Count(&vo.InProgressWorkOrders)
 
 	_ = s.alertBaseQuery().Count(&vo.StockAlertCount)
@@ -115,18 +119,20 @@ func (s *DashboardService) GetStockAlerts(ctx context.Context) ([]dto.StockAlert
 	return alerts, nil
 }
 
+// purchaseStatusDesc 采购订单状态描述。P1.5 H7：迁移 0010 状态码改版后
+// 同步新码（10/20/30/40/50），case 直接引用采购模块导出常量。
 func purchaseStatusDesc(status int) string {
 	switch status {
-	case 1:
+	case purchaseService.OrderStatusDraft:
 		return "草稿"
-	case 2:
+	case purchaseService.OrderStatusApproved:
 		return "已审批"
-	case 3:
-		return "已完成"
-	case 4:
-		return "已取消"
-	case 5:
+	case purchaseService.OrderStatusPartiallyReceived:
 		return "部分收货"
+	case purchaseService.OrderStatusCompleted:
+		return "已完成"
+	case purchaseService.OrderStatusCanceled:
+		return "已取消"
 	default:
 		return "未知"
 	}

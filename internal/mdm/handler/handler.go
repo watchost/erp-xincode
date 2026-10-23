@@ -68,14 +68,17 @@ func (h *MDMHandler) CreateMaterial(c *gin.Context) {
 	c.JSON(http.StatusOK, response.OK(nil))
 }
 
+// UpdateMaterial 绑定指针字段 DTO（P1.6 H6），ID 取自路径参数；
+// 未传字段（尤其 conversion_rate）由 service 保留原值，不再写 NULL。
 func (h *MDMHandler) UpdateMaterial(c *gin.Context) {
-	var m model.MdmMaterial
-	if err := c.ShouldBindJSON(&m); err != nil {
+	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
+	var req dto.MaterialUpdateReq
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, response.Err(10005, "参数错误: "+err.Error()))
 		return
 	}
 
-	err := h.mdmService.UpdateMaterial(c.Request.Context(), &m)
+	err := h.mdmService.UpdateMaterial(c.Request.Context(), id, req)
 	if err != nil {
 		c.JSON(http.StatusOK, response.FromError(err))
 		return

@@ -278,6 +278,11 @@
 
 ### 3.1 销售管理（第 7-8 周）
 
+> **后端已完成（2026-10-23，迁移 0016；前端 web/ 待跟进）。**
+> 订单/出库/退货全链路集成测试见 internal/sales/service（含 120 并发不超卖、
+> 信用额度复检、退货红字冲销、过账失败整事务回滚）。
+> 应收 fin_receivable 与税率/应交税费随 §3.5 应收应付模块落地。
+
 详见 [development/features/sales.md](development/features/sales.md)。
 
 新增表：

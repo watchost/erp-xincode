@@ -16,9 +16,13 @@ type ClientRepository interface {
 
 type TokenRepository interface {
 	Create(token *model.OpenToken) error
-	FindByAccessToken(accessToken string) (*model.OpenToken, error)
-	FindByRefreshToken(refreshToken string) (*model.OpenToken, error)
-	DeleteByAccessToken(accessToken string) error
+	// FindByAccessTokenHash P1.5 H5：按 access token 的 SHA-256 哈希（hex）查询。
+	FindByAccessTokenHash(hash string) (*model.OpenToken, error)
+	// RotateRefreshToken P1.5 H11：单事务内消费旧 refresh（DELETE ... WHERE
+	// refresh_token=哈希 且未过期 RETURNING）并插入新 token 行。
+	// 旧 refresh 不存在/已过期/已被并发消费时返回 gorm.ErrRecordNotFound；
+	// validate 在事务内、新行落库前回调（返回错误则整体回滚，旧行保留）。
+	RotateRefreshToken(refreshHash string, newToken *model.OpenToken, validate func(consumed *model.OpenToken) error) error
 }
 
 type WebhookRepository interface {
@@ -90,24 +94,35 @@ func (r *tokenRepo) Create(token *model.OpenToken) error {
 	return r.db.Create(token).Error
 }
 
-func (r *tokenRepo) FindByAccessToken(accessToken string) (*model.OpenToken, error) {
+func (r *tokenRepo) FindByAccessTokenHash(hash string) (*model.OpenToken, error) {
 	var token model.OpenToken
-	if err := r.db.Where("access_token = ?", accessToken).First(&token).Error; err != nil {
+	if err := r.db.Where("access_token = ?", hash).First(&token).Error; err != nil {
 		return nil, err
 	}
 	return &token, nil
 }
 
-func (r *tokenRepo) FindByRefreshToken(refreshToken string) (*model.OpenToken, error) {
-	var token model.OpenToken
-	if err := r.db.Where("refresh_token = ?", refreshToken).First(&token).Error; err != nil {
-		return nil, err
-	}
-	return &token, nil
-}
-
-func (r *tokenRepo) DeleteByAccessToken(accessToken string) error {
-	return r.db.Where("access_token = ?", accessToken).Delete(&model.OpenToken{}).Error
+func (r *tokenRepo) RotateRefreshToken(refreshHash string, newToken *model.OpenToken, validate func(consumed *model.OpenToken) error) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		var consumed model.OpenToken
+		// 原子消费：DELETE 命中即独占该 refresh（并发换发只有一个能删到行）。
+		res := tx.Raw(
+			`DELETE FROM open_token WHERE refresh_token = ? AND expires_at > now() RETURNING *`,
+			refreshHash,
+		).Scan(&consumed)
+		if res.Error != nil {
+			return res.Error // 删除失败整体回滚
+		}
+		if res.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		if validate != nil {
+			if err := validate(&consumed); err != nil {
+				return err
+			}
+		}
+		return tx.Create(newToken).Error
+	})
 }
 
 type webhookRepo struct {

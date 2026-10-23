@@ -16,6 +16,7 @@ import (
 	"erp-system/internal/pkg/middleware"
 	productionHandler "erp-system/internal/production/handler"
 	purchaseHandler "erp-system/internal/purchase/handler"
+	salesHandler "erp-system/internal/sales/handler"
 	warehouseHandler "erp-system/internal/warehouse/handler"
 )
 
@@ -33,6 +34,13 @@ const (
 	PermPurchaseOrderApprove = "purchase:order:approve"
 	PermPurchaseOrderCancel  = "purchase:order:cancel"
 	PermPurchaseInbound      = "purchase:inbound"
+
+	PermSalesOrderView    = "sal:order:view"
+	PermSalesOrderCreate  = "sal:order:create"
+	PermSalesOrderApprove = "sal:order:approve"
+	PermSalesOrderCancel  = "sal:order:cancel"
+	PermSalesOutbound     = "sal:outbound"
+	PermSalesReturn       = "sal:return"
 
 	PermProductionWOView   = "production:wo:view"
 	PermProductionWOCreate = "production:wo:create"
@@ -74,6 +82,7 @@ type Deps struct {
 	MDM          *mdmHandler.MDMHandler
 	Warehouse    *warehouseHandler.WarehouseHandler
 	Purchase     *purchaseHandler.PurchaseHandler
+	Sales        *salesHandler.SalesHandler
 	Production   *productionHandler.ProductionHandler
 	Finance      *financeHandler.FinanceHandler
 	Dashboard    *dashboardHandler.DashboardHandler
@@ -230,6 +239,21 @@ func RegisterRoutes(r *gin.Engine, d Deps) {
 			purchase.POST("/orders/:order_no/approve", middleware.RequirePermission(PermPurchaseOrderApprove), d.Purchase.ApproveOrder)
 			purchase.POST("/orders/:order_no/cancel", middleware.RequirePermission(PermPurchaseOrderCancel), d.Purchase.CancelOrder)
 			purchase.POST("/inbound/scan", middleware.RequirePermission(PermPurchaseInbound), d.Purchase.InboundScan)
+		}
+
+		sales := api.Group("/sales")
+		{
+			sales.GET("/orders", middleware.RequirePermission(PermSalesOrderView), d.Sales.ListOrders)
+			sales.POST("/orders", middleware.RequirePermission(PermSalesOrderCreate), d.Sales.CreateOrder)
+			sales.GET("/orders/:order_no", middleware.RequirePermission(PermSalesOrderView), d.Sales.GetOrder)
+			sales.PUT("/orders/:order_no", middleware.RequirePermission(PermSalesOrderCreate), d.Sales.UpdateOrder)
+			sales.POST("/orders/:order_no/approve", middleware.RequirePermission(PermSalesOrderApprove), d.Sales.ApproveOrder)
+			sales.POST("/orders/:order_no/cancel", middleware.RequirePermission(PermSalesOrderCancel), d.Sales.CancelOrder)
+			sales.POST("/outbound/scan", middleware.RequirePermission(PermSalesOutbound), d.Sales.OutboundScan)
+			sales.GET("/outbound", middleware.RequirePermission(PermSalesOrderView), d.Sales.ListOutbounds)
+			sales.POST("/returns", middleware.RequirePermission(PermSalesReturn), d.Sales.CreateReturn)
+			sales.GET("/returns/:return_no", middleware.RequirePermission(PermSalesOrderView), d.Sales.GetReturn)
+			sales.POST("/returns/:return_no/receive", middleware.RequirePermission(PermSalesReturn), d.Sales.ReceiveReturn)
 		}
 
 		production := api.Group("/production")

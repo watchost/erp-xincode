@@ -210,6 +210,132 @@ func TestMaterial_UnitConversionFields(t *testing.T) {
 	}
 }
 
+// P1.5 S5 回归：客户部分更新（只发 customer_code+name）不得清零风控字段，
+// 也不得破坏 created_at。
+func TestCustomer_PartialUpdateKeepsRiskFields(t *testing.T) {
+	gdb := testsupport.NewDB(t)
+	svc := newMDMService(gdb)
+	ctx := testsupport.Ctx()
+
+	cu := model.MdmCustomer{
+		CustomerCode: "C-PART-1",
+		Name:         "部分更新客户",
+		CreditLimit:  testsupport.D("8888"),
+		Level:        2,
+		Status:       1,
+	}
+	if err := svc.CreateCustomer(ctx, &cu); err != nil {
+		t.Fatalf("创建客户失败: %v", err)
+	}
+	before, err := svc.GetCustomer(ctx, cu.ID)
+	if err != nil {
+		t.Fatalf("查询客户失败: %v", err)
+	}
+
+	// 模拟客户端只发 {"customer_code","name"}：其余字段指针全 nil。
+	newCode, newName := "C-PART-1", "改名客户"
+	if err := svc.UpdateCustomer(ctx, cu.ID, dto.CustomerUpdateReq{CustomerCode: &newCode, Name: &newName}); err != nil {
+		t.Fatalf("部分更新客户失败: %v", err)
+	}
+
+	after, err := svc.GetCustomer(ctx, cu.ID)
+	if err != nil {
+		t.Fatalf("更新后查询客户失败: %v", err)
+	}
+	if after.Name != newName {
+		t.Fatalf("名称未更新: %+v", after)
+	}
+	if !after.CreditLimit.Equal(testsupport.D("8888")) {
+		t.Fatalf("credit_limit 被改写: got %s want 8888", after.CreditLimit)
+	}
+	if after.Level != 2 || after.Status != 1 {
+		t.Fatalf("level/status 被改写: got level=%d status=%d want 2/1", after.Level, after.Status)
+	}
+	if after.CreatedAt != before.CreatedAt {
+		t.Fatalf("created_at 被改写: got %s want %s", after.CreatedAt, before.CreatedAt)
+	}
+
+	// 显式传零值应生效（与「未传」区分）：credit_limit=0 是合法的显式清零。
+	zero := testsupport.D("0")
+	if err := svc.UpdateCustomer(ctx, cu.ID, dto.CustomerUpdateReq{CreditLimit: &zero}); err != nil {
+		t.Fatalf("显式清零 credit_limit 失败: %v", err)
+	}
+	vo, err := svc.GetCustomer(ctx, cu.ID)
+	if err != nil {
+		t.Fatalf("查询客户失败: %v", err)
+	}
+	if !vo.CreditLimit.IsZero() {
+		t.Fatalf("显式传 0 应清零 credit_limit: got %s", vo.CreditLimit)
+	}
+}
+
+// P1.6 H6 回归：不传 conversion_rate 更新物料成功且原值保留；传 0/负数被拒绝。
+func TestMaterial_UpdateConversionRateGuard(t *testing.T) {
+	gdb := testsupport.NewDB(t)
+	svc := newMDMService(gdb)
+	ctx := testsupport.Ctx()
+
+	rate := testsupport.D("12.5")
+	m := model.MdmMaterial{
+		MaterialCode:   "M-UPD-1",
+		Name:           "换算率守卫物料",
+		Unit:           "支",
+		PurchaseUnit:   "箱",
+		StockUnit:      "支",
+		ConversionRate: &rate,
+		Status:         1,
+	}
+	if err := svc.CreateMaterial(ctx, &m); err != nil {
+		t.Fatalf("创建物料失败: %v", err)
+	}
+	before, err := svc.GetMaterial(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("查询物料失败: %v", err)
+	}
+
+	// 不传 conversion_rate：必须成功且原值 12.5 保留（修复前此处 23502 → 10300）。
+	newName := "换算率守卫物料v2"
+	if err := svc.UpdateMaterial(ctx, m.ID, dto.MaterialUpdateReq{Name: &newName}); err != nil {
+		t.Fatalf("不传 conversion_rate 更新物料失败: %v", err)
+	}
+	after, err := svc.GetMaterial(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("更新后查询物料失败: %v", err)
+	}
+	if after.Name != newName {
+		t.Fatalf("名称未更新: %+v", after)
+	}
+	if after.ConversionRate == nil || !after.ConversionRate.Equal(testsupport.D("12.5")) {
+		t.Fatalf("conversion_rate 未保留: got %v", after.ConversionRate)
+	}
+	if after.CreatedAt != before.CreatedAt {
+		t.Fatalf("created_at 被改写: got %s want %s", after.CreatedAt, before.CreatedAt)
+	}
+
+	// 传 0 或负数必须拒绝（10005）。
+	zero := testsupport.D("0")
+	if err := svc.UpdateMaterial(ctx, m.ID, dto.MaterialUpdateReq{ConversionRate: &zero}); appErrCode(err) != 10005 {
+		t.Fatalf("conversion_rate=0 应返回 10005, got %v", err)
+	}
+	neg := testsupport.D("-2")
+	if err := svc.UpdateMaterial(ctx, m.ID, dto.MaterialUpdateReq{ConversionRate: &neg}); appErrCode(err) != 10005 {
+		t.Fatalf("conversion_rate=-2 应返回 10005, got %v", err)
+	}
+
+	// 传正数正常覆盖。
+	two := testsupport.D("2")
+	if err := svc.UpdateMaterial(ctx, m.ID, dto.MaterialUpdateReq{ConversionRate: &two}); err != nil {
+		t.Fatalf("更新 conversion_rate=2 失败: %v", err)
+	}
+	vo, err := svc.GetMaterial(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("查询物料失败: %v", err)
+	}
+	if vo.ConversionRate == nil || !vo.ConversionRate.Equal(two) {
+		t.Fatalf("conversion_rate 应为 2: got %v", vo.ConversionRate)
+	}
+}
+
 func itoa(v int64) string {
 	return strconv.FormatInt(v, 10)
 }
